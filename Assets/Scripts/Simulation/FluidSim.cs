@@ -95,6 +95,10 @@ namespace Seb.Fluid.Simulation
 
 		void Initialize()
 		{
+			// Instantiate a unique copy of the compute shader so that buffer/uniform bindings
+			// don't collide with other FluidSim instances sharing the same shader asset.
+			compute = Instantiate(compute);
+
 			spawnData = spawner.GetSpawnData();
 			int numParticles = spawnData.points.Length;
 

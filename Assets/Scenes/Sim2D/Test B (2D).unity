@@ -176,9 +176,10 @@ MonoBehaviour:
   smoothingRadius: 0.2
   targetDensity: 234
   pressureMultiplier: 225
-  nearPressureMultiplier: 18
+  nearPressureMultiplier: 2
   viscosityStrength: 0.03
   boundsSize: {x: 17.1, y: 9.3}
+  boundsCentre: {x: 0, y: 0}
   obstacleSize: {x: 2.75, y: 5}
   obstacleCentre: {x: 0.03, y: -1}
   interactionRadius: 2.5

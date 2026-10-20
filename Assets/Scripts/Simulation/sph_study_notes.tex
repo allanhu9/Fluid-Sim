@@ -1,0 +1,1003 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\setlist[itemize]{leftmargin=*, itemsep=0.5em}
+\setlist[enumerate]{leftmargin=*, itemsep=0.5em}
+
+\title{Smoothed Particle Hydrodynamics Study Notes}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\section{Fluid Simulation Methods and Where SPH Fits}
+
+In numerical fluid simulation, continuous fields such as velocity, density,
+pressure, and temperature must be represented by finitely many degrees of
+freedom. Methods are often classified by how those degrees of freedom represent
+space and how they move relative to the fluid. The broadest distinction is
+between \textbf{Eulerian} methods, which observe fluid through fixed locations,
+and \textbf{Lagrangian} methods, which follow moving parcels of material.
+Hybrid methods combine both viewpoints.
+
+\subsection{Eulerian Mesh-Based Methods}
+
+Eulerian methods divide the spatial domain into a structured or unstructured
+mesh and store physical quantities at grid nodes, cell centers, or element
+faces. Fluid flows through this fixed spatial representation. Common examples
+include:
+
+\begin{itemize}
+    \item \textbf{Finite Difference Methods (FDM):} Approximate derivatives
+    directly from values on a usually structured grid. They are conceptually
+    simple and efficient, but are less convenient for complicated geometries.
+    \item \textbf{Finite Volume Methods (FVM):} Integrate the governing
+    equations over control volumes and compute fluxes through cell faces.
+    Their local conservation properties make them especially common in
+    computational fluid dynamics (CFD).
+    \item \textbf{Finite Element Methods (FEM):} Represent the solution with
+    basis functions over mesh elements. They naturally support irregular
+    geometries, variable resolution, and rigorous weak formulations.
+    \item \textbf{Lattice Boltzmann Methods (LBM):} Evolve discrete particle
+    distribution functions on a lattice rather than discretizing the
+    Navier--Stokes equations directly. They are highly parallel and useful for
+    complex or porous boundaries, although standard formulations use regular
+    lattices and have restrictions on compressibility and stability.
+\end{itemize}
+
+Mesh-based methods generally provide accurate differential operators, mature
+pressure solvers, and efficient computation on regular grids. They are often
+preferred for flows in fixed domains and for high-accuracy engineering CFD.
+Their main difficulty is that the fluid must be advected through the grid,
+which can introduce numerical diffusion. Free surfaces require an additional
+interface representation, such as a level-set or volume-of-fluid method. A
+fixed Eulerian mesh itself does not deform, but moving boundaries and interfaces
+can still require cut-cell, immersed-boundary, adaptive-mesh, or remeshing
+techniques.
+
+\subsection{Lagrangian and Mesh-Free Methods}
+
+Lagrangian methods move their computational degrees of freedom with the
+material. \textbf{Smoothed Particle Hydrodynamics (SPH)} is both a Lagrangian
+particle method and a mesh-free method: it represents the fluid by particles
+without permanent connectivity between them. Each particle carries quantities
+such as mass, position, velocity, density, and pressure. Field values and their
+derivatives are estimated from weighted sums over neighboring particles using
+a smoothing kernel.
+
+Other methods in or near this category include \textbf{vortex methods}, which
+represent vorticity using moving particles or filaments, and other mesh-free
+collocation or moving-least-squares methods. These methods differ from SPH in
+what their particles represent and how they reconstruct continuous fields.
+
+\subsection{Hybrid Particle--Grid Methods}
+
+Particle-in-cell methods use particles to transport material information and a
+background grid to compute forces or solve pressure. Important variants include
+\textbf{PIC}, \textbf{FLIP}, and \textbf{APIC}. The \textbf{Material Point
+Method (MPM)} uses a related particle--grid transfer for fluids, solids, and
+coupled materials. These approaches seek a compromise: particles handle
+advection and changing topology, while the grid supplies structured and often
+more stable differential operators. Their disadvantages include transfer error
+between particles and the grid, grid-crossing artifacts, and the complexity of
+maintaining two representations.
+
+\subsection{Benefits of SPH}
+
+\begin{itemize}
+    \item \textbf{Natural free surfaces:} A fluid boundary is simply the edge
+    of the particle distribution, so no separate interface-tracking field is
+    required for many applications.
+    \item \textbf{Large deformation and topology changes:} Splashing,
+    fragmentation, merging, and moving boundaries do not distort a mesh or
+    require connectivity to be rebuilt.
+    \item \textbf{Lagrangian advection:} Material quantities move with the
+    particles, reducing the numerical diffusion associated with transporting
+    them through a fixed grid.
+    \item \textbf{Conservation and coupling:} Symmetric pairwise force
+    formulations can conserve mass exactly and conserve linear and angular
+    momentum well. The particle representation also couples naturally to
+    moving rigid bodies and deformable solids.
+    \item \textbf{Locality and parallelism:} Interactions have compact support
+    and are mostly local, making SPH suitable for parallel CPU and GPU
+    implementations.
+\end{itemize}
+
+\subsection{Limitations of SPH}
+
+\begin{itemize}
+    \item \textbf{Computational cost:} Neighbor searches must be updated as
+    particles move, and a well-resolved three-dimensional simulation can
+    require many particles and interactions.
+    \item \textbf{Accuracy and consistency:} Kernel approximations are
+    generally less accurate per degree of freedom than high-order mesh
+    methods. Irregular or incomplete particle neighborhoods, especially near
+    boundaries, can reduce consistency and introduce error.
+    \item \textbf{Pressure and density errors:} Weakly compressible SPH permits
+    small density fluctuations and may require very small time steps because
+    of an artificial speed of sound. Incompressible SPH variants instead
+    require a more expensive global pressure solve.
+    \item \textbf{Stability artifacts:} Poor formulations can suffer from
+    tensile instability, particle clumping, noisy pressure fields, or
+    excessive artificial viscosity. Stabilization improves robustness but can
+    add dissipation or alter the modeled physics.
+    \item \textbf{Boundary treatment:} Solid walls are not automatically
+    represented accurately. Ghost particles, boundary particles, or corrected
+    kernels are often needed to impose no-penetration and no-slip conditions.
+    \item \textbf{Resolution and convergence:} Refinement, adaptive resolution,
+    and rigorous convergence studies are more difficult than in many
+    established mesh-based schemes.
+\end{itemize}
+
+SPH therefore occupies an important but application-dependent part of the
+fluid-simulation field. It is particularly attractive when free surfaces,
+moving geometry, violent motion, or fluid fragmentation dominate the problem.
+For smooth flows in fixed domains, boundary-layer accuracy, or simulations
+requiring high accuracy at lower computational cost, finite volume, finite
+element, or high-order finite difference methods are often more appropriate.
+Hybrid particle--grid methods are frequently chosen when particle-based
+advection is desirable but a grid-based pressure solve or derivative operator
+offers better stability.
+
+\section{Context in Fluid Simulation: Functions and Partial Differential Operators}
+
+Fluid motion is governed by continuous continuum mechanics equations, primarily
+the \textbf{Navier--Stokes equations} for momentum conservation and the
+\textbf{continuity equation} for mass conservation.
+
+\subsection{Governing Equations}
+
+For a standard single-phase Newtonian fluid, the governing model consists of
+conservation laws for mass and momentum, constitutive and closure relations,
+and appropriate initial and boundary conditions. Thermal flows additionally
+require an energy equation. Multiphase, reactive, viscoelastic, or
+magnetohydrodynamic simulations require further equations beyond those listed
+here.
+
+\subsubsection{Lagrangian Description and Material Derivative}
+
+Because SPH particles move with the fluid, SPH naturally uses the Lagrangian
+form of the equations. The material derivative follows a moving fluid parcel:
+
+\begin{equation}
+    \frac{D}{Dt}
+    = \frac{\partial}{\partial t}
+    + \mathbf{v}\cdot\nabla.
+\end{equation}
+
+Particle trajectories satisfy the kinematic equation
+
+\begin{equation}
+    \frac{D\mathbf{x}}{Dt} = \mathbf{v}.
+\end{equation}
+
+\subsubsection{Conservation of Mass}
+
+The continuity equation in Lagrangian form is
+
+\begin{equation}
+    \frac{D\rho}{Dt} = -\rho (\nabla \cdot \mathbf{v})
+\end{equation}
+
+or, equivalently,
+
+\begin{equation}
+    \frac{D\rho}{Dt}+\rho\nabla\cdot\mathbf{v}=0.
+\end{equation}
+
+For an incompressible fluid of constant density $\rho_0$, this reduces to the
+kinematic constraint
+
+\begin{equation}
+    \nabla\cdot\mathbf{v}=0,
+    \qquad \rho=\rho_0.
+\end{equation}
+
+In SPH, density may be evolved with the continuity equation or recomputed using
+the summation density $\rho_i=\sum_j m_jW_{ij}$.
+
+\subsubsection{Conservation of Linear Momentum}
+
+The Cauchy momentum equation is
+
+\begin{equation}
+    \rho\frac{D\mathbf{v}}{Dt}
+    = \nabla\cdot\boldsymbol{\sigma}
+    + \rho\mathbf{b},
+\end{equation}
+
+where $\boldsymbol{\sigma}$ is the Cauchy stress tensor and $\mathbf{b}$ is
+body force per unit mass, such as gravitational acceleration. Decomposing the
+stress into pressure and deviatoric parts gives
+
+\begin{equation}
+    \boldsymbol{\sigma}=-p\mathbf{I}+\boldsymbol{\tau}.
+\end{equation}
+
+For a Newtonian fluid,
+
+\begin{equation}
+    \boldsymbol{\tau}
+    = \mu\left(\nabla\mathbf{v}
+    +(\nabla\mathbf{v})^{T}\right)
+    +\lambda(\nabla\cdot\mathbf{v})\mathbf{I},
+\end{equation}
+
+where $\mu$ is dynamic shear viscosity and $\lambda$ is the second viscosity
+coefficient. Substitution gives the compressible Navier--Stokes momentum
+equation for constant viscosities:
+
+\begin{equation}
+    \rho\frac{D\mathbf{v}}{Dt}
+    =-\nabla p
+    +\mu\nabla^2\mathbf{v}
+    +(\mu+\lambda)\nabla(\nabla\cdot\mathbf{v})
+    +\rho\mathbf{b}.
+\end{equation}
+
+For an incompressible fluid, $\nabla\cdot\mathbf{v}=0$, so this becomes
+
+\begin{equation}
+    \rho \frac{D\mathbf{v}}{Dt}
+    = -\nabla p + \mu \nabla^2 \mathbf{v}
+    + \rho\mathbf{b}+\mathbf{f}_{s},
+\end{equation}
+
+where $\mathbf{f}_{s}$ denotes an optional interfacial force per unit volume,
+such as surface tension. Angular momentum is conserved when the stress tensor
+is symmetric, as it is for an ordinary Newtonian fluid without couple stresses.
+
+\subsubsection{Pressure Closure}
+
+Mass and momentum conservation do not by themselves determine pressure.
+The closure depends on the SPH formulation:
+
+\begin{itemize}
+    \item \textbf{Weakly compressible SPH (WCSPH):} Pressure is computed from
+    an equation of state. A common choice is Tait's equation,
+    \begin{equation}
+        p = \frac{\rho_0c_0^2}{\gamma}
+        \left[
+        \left(\frac{\rho}{\rho_0}\right)^\gamma-1
+        \right],
+    \end{equation}
+    where $\rho_0$ is reference density, $c_0$ is an artificial numerical
+    speed of sound, and $\gamma$ controls stiffness. The fluid is allowed a
+    small, controlled density variation.
+    \item \textbf{Incompressible or projection SPH (ISPH):} Pressure acts as a
+    Lagrange multiplier enforcing $\nabla\cdot\mathbf{v}=0$. Taking the
+    divergence of a provisional-velocity correction produces a pressure
+    Poisson equation, schematically
+    \begin{equation}
+        \nabla\cdot\left(\frac{1}{\rho}\nabla p\right)
+        = \frac{1}{\Delta t}\nabla\cdot\mathbf{v}^{*},
+    \end{equation}
+    followed by
+    \begin{equation}
+        \mathbf{v}^{n+1}
+        =\mathbf{v}^{*}
+        -\Delta t\frac{\nabla p}{\rho}.
+    \end{equation}
+\end{itemize}
+
+\subsubsection{Conservation of Energy}
+
+An isothermal simulation can omit an explicit energy equation. When
+temperature, compressible thermodynamics, or heat transfer matters, one common
+internal-energy form is
+
+\begin{equation}
+    \rho\frac{De}{Dt}
+    = -p\nabla\cdot\mathbf{v}
+    +\boldsymbol{\tau}:\nabla\mathbf{v}
+    -\nabla\cdot\mathbf{q}
+    +\rho r,
+\end{equation}
+
+where $e$ is specific internal energy, $\mathbf{q}$ is heat flux, and $r$ is
+volumetric heating per unit mass. Fourier's law closes conductive heat flux:
+
+\begin{equation}
+    \mathbf{q}=-k\nabla T,
+\end{equation}
+
+where $k$ is thermal conductivity. A caloric equation of state, such as
+$e=e(\rho,T)$, is then also required.
+
+\subsubsection{Initial, Boundary, and Interface Conditions}
+
+The differential equations are not a complete simulation problem until they
+are supplied with:
+
+\begin{itemize}
+    \item initial particle positions and initial fields
+    $\rho(\mathbf{x},0)$, $\mathbf{v}(\mathbf{x},0)$, and, when needed,
+    $T(\mathbf{x},0)$;
+    \item wall conditions, normally no penetration and either no slip,
+    prescribed slip, or a specified wall velocity;
+    \item inlet and outlet conditions, such as prescribed velocity, mass flux,
+    or pressure;
+    \item free-surface conditions, usually ambient normal stress and zero
+    tangential stress when surrounding-gas dynamics are neglected; and
+    \item interface jump conditions for multiphase flow, including surface
+    tension, contact angle, and discontinuous material properties.
+\end{itemize}
+
+\subsubsection{Fields and Differential Operators}
+
+In these equations:
+
+\begin{enumerate}
+    \item \textbf{Functions ($f(\mathbf{x})$, $g(\mathbf{x})$):} These represent
+    continuous fluid properties across space and time, such as the velocity
+    field $\mathbf{v}$, density field $\rho$, or pressure field $p$.
+    \item \textbf{Partial differential operators
+    ($\nabla$, $\nabla \cdot$, $\nabla^2$):} These describe how fluid
+    properties change across space.
+\end{enumerate}
+
+\begin{itemize}
+    \item \textbf{Gradient ($\nabla p$):} Measures spatial pressure
+    differences, which generate the internal force that pushes fluid from high
+    pressure to low pressure.
+    \item \textbf{Divergence ($\nabla \cdot \mathbf{v}$):} Measures the rate at
+    which fluid expands or compresses.
+    \item \textbf{Laplacian ($\nabla^2 \mathbf{v}$):} Measures spatial
+    variations in velocity to compute internal viscous (friction) forces
+    between fluid layers.
+\end{itemize}
+
+\section{Main Adjustable Parameters in an SPH Simulation}
+
+SPH parameters fall into two fundamentally different groups.
+\textbf{Physical parameters} define the fluid and should be determined from the
+modeled material and nondimensional regime. \textbf{Numerical parameters}
+control how that model is discretized and solved; they should be selected
+through convergence, stability, and sensitivity studies rather than tuned to
+produce a preferred visual result.
+
+\subsection{Physical and Model Parameters}
+
+\begin{itemize}
+    \item \textbf{Reference density $\rho_0$:} Sets the fluid's nominal
+    density and, together with particle volume, determines particle mass.
+    Water near room temperature is commonly modeled with
+    $\rho_0\approx1000\ \mathrm{kg\,m^{-3}}$.
+    \item \textbf{Viscosity $\mu$ or $\nu=\mu/\rho$:} Controls physical
+    momentum diffusion. Its importance relative to inertia is measured by the
+    Reynolds number
+    \begin{equation}
+        \mathrm{Re}=\frac{UL}{\nu}.
+    \end{equation}
+    \item \textbf{Body acceleration $\mathbf{b}$:} Usually gravity
+    $\mathbf{g}$, but it may also include rotating-frame or prescribed
+    accelerations. Gravity--inertia balance is characterized by the Froude
+    number $\mathrm{Fr}=U/\sqrt{gL}$.
+    \item \textbf{Surface tension $\sigma$:} Controls capillary forces at a
+    free surface or material interface. Its importance can be described by the
+    Weber number $\mathrm{We}=\rho U^2L/\sigma$.
+    \item \textbf{Thermal and multiphase properties:} Thermal conductivity
+    $k$, heat capacity, phase densities and viscosities, contact angle, and
+    equations of state are adjustable only when the modeled physics requires
+    them.
+\end{itemize}
+
+Here $U$ and $L$ are characteristic velocity and length scales. Matching the
+relevant nondimensional numbers is often more informative than considering
+each dimensional parameter independently.
+
+\subsection{Resolution, Particles, and Kernel}
+
+\begin{itemize}
+    \item \textbf{Initial particle spacing $\Delta x$:} The primary spatial
+    resolution control. In $d$ dimensions, a uniform equal-mass setup commonly
+    uses
+    \begin{equation}
+        m \approx \rho_0(\Delta x)^d.
+    \end{equation}
+    Halving $\Delta x$ increases particle count by roughly $2^d$, before the
+    additional cost of smaller time steps is considered.
+    \item \textbf{Smoothing length $h$:} Sets the kernel scale and is usually
+    related to particle spacing by
+    \begin{equation}
+        h=\eta\Delta x,
+    \end{equation}
+    where $\eta$ is typically of order one but depends on the kernel convention
+    and dimension. Increasing $h$ gives more neighbors and smoother, more
+    robust estimates, but blurs small features and increases cost. Too small an
+    $h$ produces noisy, inconsistent estimates and possible particle disorder.
+    \item \textbf{Kernel function and support radius:} Cubic spline, Wendland,
+    and other kernels differ in smoothness, stability, pairing resistance, and
+    computational cost. A kernel may have support $h$, $2h$, or another
+    multiple of $h$, so values of $h$ are meaningful only with the stated
+    convention.
+    \item \textbf{Target neighbor count:} Closely coupled to $h/\Delta x$ and
+    the kernel. Too few neighbors increases sampling error; too many increases
+    smoothing and work. Variable-smoothing-length methods adjust $h_i$ to keep
+    mass or neighbor count within the support approximately constant.
+\end{itemize}
+
+\subsection{Compressibility and Pressure Parameters}
+
+\begin{itemize}
+    \item \textbf{Numerical speed of sound $c_0$ in WCSPH:} Determines
+    equation-of-state stiffness. A common design criterion is a numerical Mach
+    number
+    \begin{equation}
+        \mathrm{Ma}=\frac{U_{\max}}{c_0}\lesssim0.1,
+    \end{equation}
+    which keeps density variation near one percent in many flows. A larger
+    $c_0$ reduces density error but forces a smaller acoustic time step.
+    \item \textbf{Equation-of-state exponent $\gamma$ and background
+    pressure:} Control the pressure--density response. For water-like WCSPH,
+    $\gamma=7$ is common, but it is a modeling choice rather than a universal
+    constant. Background pressure can reduce tensile instability but may
+    increase boundary errors or stiffness.
+    \item \textbf{Pressure-solver tolerance and iteration limit:} In ISPH,
+    PCISPH, DFSPH, and related methods, tighter density or divergence tolerances
+    improve incompressibility at greater cost. The iteration cap must be high
+    enough that ordinary steps actually reach the tolerance; otherwise it
+    silently becomes the effective accuracy control.
+\end{itemize}
+
+\subsection{Viscosity, Stabilization, and Particle Regularization}
+
+\begin{itemize}
+    \item \textbf{Physical-viscosity discretization:} The chosen Laplacian or
+    pairwise formulation must reproduce the intended $\mu$ or $\nu$ and behave
+    correctly near walls.
+    \item \textbf{Artificial-viscosity coefficients $\alpha$ and $\beta$:}
+    Add dissipation to capture shocks and suppress interparticle velocity
+    noise. They are important in compressible SPH but can overdamp low-speed
+    free-surface flow if set unnecessarily high.
+    \item \textbf{Density diffusion, such as $\delta$-SPH:} A diffusion
+    coefficient damps high-frequency density and pressure oscillations. Too
+    much diffusion smears real density structure and interfaces.
+    \item \textbf{XSPH velocity smoothing, shifting, or transport velocity:}
+    Regularizes the particle distribution. Its strength trades improved
+    particle order and stability against added diffusion or unintended
+    transport, so conservation implications must be checked.
+\end{itemize}
+
+\subsection{Time Integration and Stability Controls}
+
+\begin{itemize}
+    \item \textbf{Time step $\Delta t$:} Must resolve acoustic propagation,
+    acceleration, viscosity, and sometimes surface tension. A typical explicit
+    choice is
+    \begin{equation}
+        \Delta t
+        = C_{\mathrm{CFL}}\min\left(
+        \frac{h}{c_0+v_{\mathrm{sig}}},
+        \sqrt{\frac{h}{a_{\max}}},
+        \frac{h^2}{\nu}
+        \right),
+    \end{equation}
+    with an additional capillary restriction when surface tension is strong.
+    Here $v_{\mathrm{sig}}$ is a characteristic relative or signal velocity
+    and $a_{\max}$ is maximum particle acceleration.
+    \item \textbf{CFL or safety coefficient $C_{\mathrm{CFL}}$:} Scales the
+    stability limits. A smaller value is safer and more accurate but increases
+    the number of steps.
+    \item \textbf{Integrator:} Explicit Euler, leapfrog, Verlet, predictor--
+    corrector, and Runge--Kutta methods have different accuracy, storage, and
+    stability properties. Solver tolerances and substepping are additional
+    controls for implicit or iterative schemes.
+\end{itemize}
+
+\subsection{Boundary and Interaction Parameters}
+
+\begin{itemize}
+    \item \textbf{Boundary representation and spacing:} Ghost, dummy, dynamic,
+    or semi-analytical boundary methods require enough boundary layers and
+    spacing compatible with the fluid particles and kernel support.
+    \item \textbf{Wall velocity and slip model:} Determine whether the physical
+    condition is no slip, free slip, or partial slip. Penalty-based boundaries
+    may also expose stiffness and damping coefficients.
+    \item \textbf{Contact and wetting controls:} Contact angle, adhesion, and
+    fluid--solid coupling coefficients matter in capillary and multiphysics
+    problems and should correspond to measurable physics where possible.
+\end{itemize}
+
+\subsection{Practical Parameter-Selection Order}
+
+A defensible setup usually follows this order:
+
+\begin{enumerate}
+    \item Set the physical scale, material properties, forcing, and boundary
+    conditions; identify the relevant Reynolds, Froude, Weber, and Mach
+    numbers.
+    \item Choose $\Delta x$ from the smallest feature that must be resolved,
+    then choose the kernel and a compatible $h/\Delta x$ and neighbor count.
+    \item Select the pressure treatment. For WCSPH, choose $c_0$ from the
+    allowable density variation; for an incompressible solver, choose explicit
+    density or divergence tolerances.
+    \item Add only the stabilization needed for the observed numerical mode,
+    and separate artificial dissipation from the target physical viscosity.
+    \item Compute $\Delta t$ from all applicable stability restrictions rather
+    than selecting it independently.
+    \item Repeat the simulation at finer $\Delta x$, smaller $\Delta t$, and
+    tighter solver tolerances. Quantities of interest should approach a stable
+    value; otherwise the result is parameter-dependent rather than demonstrably
+    converged.
+\end{enumerate}
+
+\section{Discretization and Its Purpose}
+
+\subsection{What Is Discretization?}
+
+Discretization is the mathematical process of converting \textbf{continuous}
+differential equations and infinite spatial fields into a \textbf{discrete},
+finite form that a digital computer can compute step by step.
+
+In SPH, discretization happens through a two-step pipeline:
+
+\begin{enumerate}
+    \item \textbf{Continuous integral approximation:} Continuous functions are
+    smoothed by convolving them with a continuous weighting or smoothing kernel
+    function $W$.
+    \item \textbf{Particle discretization:} Continuous spatial integrals are
+    replaced by discrete summations over nearby neighboring particles:
+\end{enumerate}
+
+\subsection{How Kernel Smoothing Produces a Continuous Approximation}
+
+\subsubsection{Field Quantities}
+
+A \textbf{field} assigns a physical quantity to every point in space and,
+usually, time. In general, a field can be written as
+
+\begin{equation}
+    A = A(\mathbf{x},t),
+\end{equation}
+
+where $\mathbf{x}$ is a spatial position and $t$ is time. Holding time fixed
+gives the spatial field $A(\mathbf{x})$. For example, the scalar field
+$\rho(\mathbf{x},t)$ assigns one density value to each point, while the vector
+field $\mathbf{v}(\mathbf{x},t)$ assigns a velocity vector to each point.
+
+\begin{itemize}
+    \item \textbf{Scalar fields} assign one number to each location. Examples
+    include density $\rho$, pressure $p$, and temperature $T$.
+    \item \textbf{Vector fields} assign a vector to each location. Examples
+    include velocity $\mathbf{v}$ and force per unit volume $\mathbf{f}$.
+\end{itemize}
+
+In continuum mechanics, these fields are treated as continuous: a value is
+defined at every point, including the infinitely many points between any two
+locations. An SPH computer model cannot store infinitely many values. It stores
+field samples $A_j = A(\mathbf{x}_j)$ only at particle positions
+$\mathbf{x}_j$ and reconstructs approximate field values between particles.
+
+\subsubsection{The Dirac Delta Distribution}
+
+The \textbf{Dirac delta} $\delta(\mathbf{x}-\mathbf{x}')$ is an idealized point
+selector. It is called a distribution rather than an ordinary function because
+it is defined by how it behaves inside an integral. Informally, it is zero
+everywhere except at $\mathbf{x}'=\mathbf{x}$, is infinitely concentrated at
+that point, and has unit integral:
+
+\begin{equation}
+    \delta(\mathbf{x}-\mathbf{x}') = 0
+    \quad \text{for } \mathbf{x}' \ne \mathbf{x},
+    \qquad
+    \int_{\Omega} \delta(\mathbf{x}-\mathbf{x}')\,d\mathbf{x}' = 1,
+\end{equation}
+
+provided that $\mathbf{x}$ lies inside $\Omega$. Its defining
+\textbf{sifting property} is
+
+\begin{equation}
+    \int_{\Omega} A(\mathbf{x}')
+    \delta(\mathbf{x}-\mathbf{x}')\,d\mathbf{x}' = A(\mathbf{x}).
+\end{equation}
+
+Here, $\mathbf{x}$ is the location where the field is being evaluated, while
+$\mathbf{x}'$ is a dummy integration variable that ranges over the domain.
+The delta eliminates every contribution except the one at
+$\mathbf{x}'=\mathbf{x}$, so the integral returns the exact field value at
+$\mathbf{x}$. Thus, the exact value of a field can be written as
+
+\begin{equation}
+    A(\mathbf{x})
+    = \int_{\Omega} A(\mathbf{x}')
+    \delta(\mathbf{x} - \mathbf{x}')\,d\mathbf{x}'.
+\end{equation}
+
+This identity is the starting point for SPH smoothing. SPH replaces the
+infinitely concentrated Dirac delta with a smooth, finite-width kernel
+$W(\mathbf{x} - \mathbf{x}', h)$ of finite width. This gives the kernel
+approximation
+
+\begin{equation}
+    \left\langle A(\mathbf{x}) \right\rangle
+    = \int_{\Omega} A(\mathbf{x}')
+    W(\mathbf{x} - \mathbf{x}', h)\,d\mathbf{x}'.
+\end{equation}
+
+This operation is called a \textbf{convolution}. To estimate the field at
+$\mathbf{x}$, it forms a weighted average of values in a neighborhood around
+$\mathbf{x}$. Nearby points receive greater weight, while points outside the
+kernel's support receive no weight. A useful smoothing kernel normally has the
+following properties:
+
+\begin{itemize}
+    \item \textbf{Normalization:}
+    \begin{equation}
+        \int_{\mathbb{R}^d} W(\mathbf{r},h)\,d\mathbf{r} = 1.
+    \end{equation}
+    This ensures that smoothing reproduces a constant field exactly.
+    \item \textbf{Dirac-delta limit:}
+    \begin{equation}
+        \lim_{h\to 0} W(\mathbf{r},h) = \delta(\mathbf{r}).
+    \end{equation}
+    More precisely, this limit holds in the distributional sense:
+    $\int A(\mathbf{x}')W(\mathbf{x}-\mathbf{x}',h)\,d\mathbf{x}'
+    \to A(\mathbf{x})$ for a sufficiently regular field $A$. Thus, the
+    approximation converges toward the original field as the smoothing region
+    shrinks.
+    \item \textbf{Positivity:}
+    \begin{equation}
+        W(\mathbf{r},h) \geq 0.
+    \end{equation}
+    Nonnegative weights make the approximation a local weighted average and
+    prevent the kernel itself from introducing new extrema through negative
+    contributions.
+    \item \textbf{Symmetry:}
+    \begin{equation}
+        W(\mathbf{r},h) = W(-\mathbf{r},h).
+    \end{equation}
+    A radial kernel depends only on $\lVert\mathbf{r}\rVert$, so particles at
+    equal distances receive equal weights regardless of direction. This also
+    supports pairwise, antisymmetric force calculations in SPH.
+    \item \textbf{Compact support:} There is a finite constant $\kappa$ such
+    that
+    \begin{equation}
+        W(\mathbf{r},h) = 0
+        \quad \text{when} \quad
+        \lVert\mathbf{r}\rVert \geq \kappa h.
+    \end{equation}
+    Only nearby particles contribute, making neighbor summations practical.
+\end{itemize}
+
+The \textbf{smoothing length} $h$ controls the width of the neighborhood. A
+larger $h$ includes more neighbors and produces a smoother but less localized
+estimate. A smaller $h$ preserves finer detail but may produce a noisy estimate
+if too few particles contribute.
+
+\subsubsection{The Cubic Spline Kernel}
+
+A common SPH choice is the compactly supported cubic spline, also called the
+cubic $B$-spline or $M_4$ kernel. Let
+
+\begin{equation}
+    q = \frac{\lVert\mathbf{r}\rVert}{h}.
+\end{equation}
+
+In $d$ spatial dimensions, the convention used here is
+
+\begin{equation}
+    W(\mathbf{r},h) = \sigma_d
+    \begin{cases}
+        6(q^3-q^2)+1,
+            & 0 \leq q \leq \dfrac{1}{2}, \\
+        2(1-q)^3,
+            & \dfrac{1}{2} < q \leq 1, \\
+        0,
+            & \text{otherwise},
+    \end{cases}
+\end{equation}
+
+where the dimension-dependent normalization constant is
+
+\begin{equation}
+    \sigma_1 = \frac{4}{3h},
+    \qquad
+    \sigma_2 = \frac{40}{7\pi h^2},
+    \qquad
+    \sigma_3 = \frac{8}{\pi h^3}.
+\end{equation}
+
+Some references instead define the same cubic spline with support radius
+$2h$. The two formulas differ only in the convention used for the smoothing
+length; the present form has support radius $h$ and matches the slide notation.
+
+This kernel fulfills the desired conditions:
+
+\begin{itemize}
+    \item \textbf{Normalization:} For a radial kernel, changing variables from
+    $r$ to $q=r/h$ gives, with $f(q)$ denoting the piecewise polynomial above,
+    \begin{equation}
+        \int_{\mathbb{R}^d} W\,d\mathbf{r}
+        = S_d\sigma_d h^d \int_0^1 f(q)q^{d-1}\,dq,
+    \end{equation}
+    where $S_1=2$, $S_2=2\pi$, and $S_3=4\pi$ are the surface measures of the
+    unit spheres. The needed integrals are
+    \begin{equation}
+        \int_0^1 f(q)\,dq=\frac{3}{8},
+        \qquad
+        \int_0^1 qf(q)\,dq=\frac{7}{80},
+        \qquad
+        \int_0^1 q^2f(q)\,dq=\frac{1}{32}.
+    \end{equation}
+    Substitution of $\sigma_1$, $\sigma_2$, or $\sigma_3$ therefore makes the
+    integral equal to one in the corresponding dimension.
+    \item \textbf{Dirac-delta limit:} Each $\sigma_d$ contains the required
+    factor $h^{-d}$, preserving unit integral while the support radius $h$
+    approaches zero. Consequently, all
+    of the kernel's unit mass becomes concentrated at $\mathbf{r}=\mathbf{0}$,
+    $W(\mathbf{r},h) \rightarrow \delta(\mathbf{r})$ as $h \rightarrow 0$, so
+    convolution with $W$ approaches exact evaluation.
+    \item \textbf{Positivity:} Both polynomial pieces of $f(q)$ are
+    nonnegative on their stated intervals, and $\sigma_d>0$. Hence
+    $W(\mathbf{r},h)\geq 0$.
+    \item \textbf{Symmetry:} The kernel depends on $\mathbf{r}$ only through
+    $q=\lVert\mathbf{r}\rVert/h$. Since
+    $\lVert-\mathbf{r}\rVert=\lVert\mathbf{r}\rVert$, it follows that
+    $W(-\mathbf{r},h)=W(\mathbf{r},h)$.
+    \item \textbf{Compact support:} The kernel is zero outside $q\leq1$ and
+    also reaches zero at $q=1$. Therefore $W(\mathbf{r},h)=0$ whenever
+    $\lVert\mathbf{r}\rVert\geq h$, so $\kappa=1$.
+\end{itemize}
+
+To evaluate the integral using particles, SPH assigns particle $j$ the volume
+element
+
+\begin{equation}
+    \Delta V_j \approx \frac{m_j}{\rho_j},
+\end{equation}
+
+where $m_j$ and $\rho_j$ are its mass and density. Replacing the integral by a
+sum of these particle volumes gives
+
+\begin{equation}
+    \left\langle A(\mathbf{x}_i) \right\rangle
+    \approx \sum_j A_j \frac{m_j}{\rho_j}
+    W(\mathbf{x}_i - \mathbf{x}_j, h)
+\end{equation}
+
+Each term is particle $j$'s field value multiplied by its represented volume
+and its kernel weight relative to particle $i$. Although the field data is
+stored only at discrete particles, $W$ is a continuous function of position.
+The same sum can therefore be evaluated at any location $\mathbf{x}$, producing
+a continuous interpolated field from discrete samples.
+
+Similarly, spatial derivatives on fluid particles shift directly onto
+gradients of the kernel function $W$.
+
+\subsection{Worked PDE Example: The Continuity Equation}
+
+Consider conservation of mass in Eulerian form:
+
+\begin{equation}
+    \frac{\partial \rho}{\partial t}
+    + \nabla\cdot(\rho\mathbf{v}) = 0.
+\end{equation}
+
+Using the material derivative
+
+\begin{equation}
+    \frac{D}{Dt}
+    = \frac{\partial}{\partial t} + \mathbf{v}\cdot\nabla,
+\end{equation}
+
+the same PDE can be written in Lagrangian form as
+
+\begin{equation}
+    \frac{D\rho}{Dt} = -\rho\nabla\cdot\mathbf{v}.
+\end{equation}
+
+This form is natural for SPH because each particle moves with the fluid.
+
+\subsubsection{How SPH Processes the Field Quantities}
+
+The continuous fields are replaced by values carried by particles:
+
+\begin{itemize}
+    \item The density field $\rho(\mathbf{x},t)$ becomes one scalar sample
+    $\rho_i(t)$ on particle $i$.
+    \item The velocity field $\mathbf{v}(\mathbf{x},t)$ becomes one vector
+    sample $\mathbf{v}_i(t)$ on particle $i$.
+    \item The particle position $\mathbf{x}_i(t)$ specifies where those field
+    samples are currently located.
+    \item The mass $m_i$ is usually fixed and represents the amount of fluid
+    carried by the particle. The ratio $m_i/\rho_i$ approximates its volume.
+\end{itemize}
+
+When a field value is required between particles, SPH reconstructs it using
+the kernel sum. For example,
+
+\begin{equation}
+    \left\langle \rho(\mathbf{x}) \right\rangle
+    \approx \sum_j m_j W(\mathbf{x}-\mathbf{x}_j,h).
+\end{equation}
+
+At particle $i$, this gives the commonly used density summation
+
+\begin{equation}
+    \rho_i \approx \sum_j m_j W_{ij},
+    \qquad
+    W_{ij}=W(\mathbf{x}_i-\mathbf{x}_j,h).
+\end{equation}
+
+Thus, field processing means storing samples on particles and using weighted
+neighbor sums whenever a continuous value must be reconstructed.
+
+\subsubsection{How SPH Processes the Differential Operators}
+
+SPH replaces each differential operator with an operation on moving particles
+and kernel derivatives:
+
+\begin{itemize}
+    \item The material derivative $D/Dt$ becomes an ordinary time derivative
+    following particle $i$. Therefore
+    $D\rho/Dt$ becomes $d\rho_i/dt$.
+    \item The divergence $\nabla\cdot\mathbf{v}$ becomes a weighted sum of
+    velocity differences dotted with kernel gradients:
+\end{itemize}
+
+\begin{equation}
+    (\nabla\cdot\mathbf{v})_i
+    \approx
+    \frac{1}{\rho_i}
+    \sum_j m_j(\mathbf{v}_j-\mathbf{v}_i)
+    \cdot\nabla_i W_{ij}.
+\end{equation}
+
+The difference $\mathbf{v}_j-\mathbf{v}_i$ is important: if all neighboring
+particles have the same velocity, every difference is zero and SPH correctly
+estimates zero divergence.
+
+For the cubic spline used above, let
+$\mathbf{r}_{ij}=\mathbf{x}_i-\mathbf{x}_j$,
+$r_{ij}=\lVert\mathbf{r}_{ij}\rVert$, and $q=r_{ij}/h$. For
+$r_{ij}>0$, its gradient is
+
+\begin{equation}
+    \nabla_i W_{ij}
+    = \frac{\sigma_d}{h}f'(q)
+    \frac{\mathbf{r}_{ij}}{r_{ij}},
+\end{equation}
+
+where
+
+\begin{equation}
+    f'(q)=
+    \begin{cases}
+        18q^2-12q,
+            & 0 \leq q \leq \dfrac{1}{2}, \\
+        -6(1-q)^2,
+            & \dfrac{1}{2}<q\leq1, \\
+        0,
+            & \text{otherwise}.
+    \end{cases}
+\end{equation}
+
+At $r_{ij}=0$, symmetry gives $\nabla_iW_{ij}=\mathbf{0}$.
+
+\subsubsection{The Resulting Particle Equation}
+
+Substituting the SPH divergence approximation into the continuity equation
+gives
+
+\begin{align}
+    \frac{d\rho_i}{dt}
+    &= -\rho_i(\nabla\cdot\mathbf{v})_i \\
+    &\approx \sum_j m_j(\mathbf{v}_i-\mathbf{v}_j)
+    \cdot\nabla_iW_{ij}.
+\end{align}
+
+The continuous PDE has now become one ordinary differential equation for each
+particle. A simulation step processes it as follows:
+
+\begin{enumerate}
+    \item Find all neighbors $j$ satisfying
+    $\lVert\mathbf{x}_i-\mathbf{x}_j\rVert<h$.
+    \item Read the sampled field values $\rho_i$, $\mathbf{v}_i$, and
+    $\mathbf{v}_j$ from the particles.
+    \item Evaluate $\nabla_iW_{ij}$ from particle separation using the cubic
+    spline derivative.
+    \item Sum the neighbor contributions to obtain $d\rho_i/dt$.
+    \item Advance density in time; for example, an explicit Euler step is
+    \begin{equation}
+        \rho_i^{n+1}
+        = \rho_i^n + \Delta t
+        \left(\frac{d\rho_i}{dt}\right)^n.
+    \end{equation}
+\end{enumerate}
+
+In summary, SPH handles \emph{field quantities} as particle-carried samples and
+kernel-weighted reconstructions. It handles \emph{differential operators} by
+differentiating the smooth kernel and summing the resulting neighbor
+contributions. This converts the original spatial PDE into a system of
+time-dependent particle equations.
+
+\section{Major SPH Papers and Further Reading}
+
+The following papers provide a chronological path from the original
+astrophysical formulation of SPH to modern incompressible-flow and computer
+graphics methods. DOI links lead to the publisher record; access to the full
+text may depend on the reader's institution.
+
+\begin{enumerate}
+    \item \textbf{L. B. Lucy (1977), ``A Numerical Approach to the Testing of
+    the Fission Hypothesis.''} One of the two papers that independently
+    introduced SPH, originally for three-dimensional astrophysical problems.
+    \href{https://doi.org/10.1086/112164}{Read via DOI}.
+
+    \item \textbf{R. A. Gingold and J. J. Monaghan (1977), ``Smoothed Particle
+    Hydrodynamics: Theory and Application to Non-Spherical Stars.''} The other
+    foundational SPH paper; it develops the kernel-based particle formulation
+    and applies it to stellar dynamics.
+    \href{https://doi.org/10.1093/mnras/181.3.375}{Read via DOI}.
+
+    \item \textbf{J. J. Monaghan (1992), ``Smoothed Particle Hydrodynamics.''}
+    A classic review that systematizes the mathematical formulation, kernels,
+    conservation properties, artificial viscosity, and early astrophysical
+    applications.
+    \href{https://doi.org/10.1146/annurev.aa.30.090192.002551}{Read via DOI}.
+
+    \item \textbf{J. P. Morris, P. J. Fox, and Y. Zhu (1997), ``Modeling Low
+    Reynolds Number Incompressible Flows Using SPH.''} An influential treatment
+    of physical viscosity and wall boundaries for viscous incompressible flows.
+    \href{https://doi.org/10.1006/jcph.1997.5776}{Read via DOI}.
+
+    \item \textbf{S. J. Cummins and M. Rudman (1999), ``An SPH Projection
+    Method.''} Introduces a pressure-projection approach that enforces
+    incompressibility through a pressure Poisson equation rather than a stiff
+    equation of state.
+    \href{https://doi.org/10.1006/jcph.1999.6246}{Read via DOI}.
+
+    \item \textbf{M. M{\"u}ller, D. Charypar, and M. Gross (2003),
+    ``Particle-Based Fluid Simulation for Interactive Applications.''} A
+    landmark computer-graphics paper that presents an efficient SPH
+    formulation for interactive liquid simulation, including pressure,
+    viscosity, and surface tension.
+    \href{https://doi.org/10.2312/SCA03/154-159}{Read via DOI}.
+
+    \item \textbf{J. J. Monaghan (2005), ``Smoothed Particle Hydrodynamics.''}
+    A broad and more modern review of SPH theory, numerical behavior, and
+    applications across astrophysics and continuum mechanics.
+    \href{https://doi.org/10.1088/0034-4885/68/8/R01}{Read via DOI}.
+
+    \item \textbf{M. Becker and M. Teschner (2007), ``Weakly Compressible SPH
+    for Free Surface Flows.''} A widely used graphics formulation that controls
+    density variation with a stiff equation of state and is designed for
+    efficient free-surface animation.
+    \href{https://doi.org/10.2312/SCA/SCA07/209-217}{Read via DOI}.
+
+    \item \textbf{B. Solenthaler and R. Pajarola (2009), ``Predictive-Corrective
+    Incompressible SPH.''} Introduces PCISPH, which iteratively predicts and
+    corrects pressure to reduce density error while allowing larger time steps
+    than many weakly compressible formulations.
+    \href{https://doi.org/10.1145/1576246.1531346}{Read via DOI}.
+
+    \item \textbf{D. J. Price (2012), ``Smoothed Particle Hydrodynamics and
+    Magnetohydrodynamics.''} A detailed derivation-focused review covering
+    consistency, conservation, shocks, dissipation, and magnetohydrodynamics;
+    it is useful even when the main interest is ordinary fluid SPH.
+    \href{https://doi.org/10.1016/j.jcp.2010.12.011}{Read via DOI}.
+
+    \item \textbf{A. Adami, X. Y. Hu, and N. A. Adams (2012), ``A Generalized
+    Wall Boundary Condition for Smoothed Particle Hydrodynamics.''} Develops a
+    robust boundary-particle treatment for walls under complex and
+    time-dependent flows.
+    \href{https://doi.org/10.1016/j.jcp.2012.05.005}{Read via DOI}.
+
+    \item \textbf{M. Ihmsen, J. Orthmann, B. Solenthaler, A. Kolb, and
+    M. Teschner (2014), ``SPH Fluids in Computer Graphics.''} A useful survey
+    of the complete SPH simulation pipeline, including neighborhood search,
+    incompressibility solvers, boundary handling, surface reconstruction, and
+    implementation considerations.
+    \href{https://doi.org/10.1109/TVCG.2014.2309246}{Read via DOI}.
+\end{enumerate}
+
+\end{document}

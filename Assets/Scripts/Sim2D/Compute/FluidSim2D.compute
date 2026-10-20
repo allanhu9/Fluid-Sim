@@ -35,6 +35,7 @@ const float pressureMultiplier;
 const float nearPressureMultiplier;
 const float viscosityStrength;
 const float2 boundsSize;
+const float2 boundsCentre;
 const float2 interactionInputPoint;
 const float interactionInputStrength;
 const float interactionInputRadius;
@@ -151,16 +152,17 @@ void HandleCollisions(uint particleIndex)
 
 	// Keep particle inside bounds
 	const float2 halfSize = boundsSize * 0.5;
-	float2 edgeDst = halfSize - abs(pos);
+	float2 posRelativeToBounds = pos - boundsCentre;
+	float2 edgeDst = halfSize - abs(posRelativeToBounds);
 
 	if (edgeDst.x <= 0)
 	{
-		pos.x = halfSize.x * sign(pos.x);
+		pos.x = halfSize.x * sign(posRelativeToBounds.x) + boundsCentre.x;
 		vel.x *= -1 * collisionDamping;
 	}
 	if (edgeDst.y <= 0)
 	{
-		pos.y = halfSize.y * sign(pos.y);
+		pos.y = halfSize.y * sign(posRelativeToBounds.y) + boundsCentre.y;
 		vel.y *= -1 * collisionDamping;
 	}
 

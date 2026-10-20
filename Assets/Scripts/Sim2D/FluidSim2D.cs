@@ -22,6 +22,7 @@ namespace Seb.Fluid2D.Simulation
 		public float nearPressureMultiplier;
 		public float viscosityStrength;
 		public Vector2 boundsSize;
+		public Vector2 boundsCentre;
 		public Vector2 obstacleSize;
 		public Vector2 obstacleCentre;
 
@@ -74,6 +75,10 @@ namespace Seb.Fluid2D.Simulation
 
 		void Init()
 		{
+			// Instantiate a unique copy of the compute shader so that buffer/uniform bindings
+			// don't collide with other FluidSim2D instances sharing the same shader asset.
+			compute = Instantiate(compute);
+
 			float deltaTime = 1 / 60f;
 			Time.fixedDeltaTime = deltaTime;
 
@@ -175,6 +180,7 @@ namespace Seb.Fluid2D.Simulation
 			compute.SetFloat("nearPressureMultiplier", nearPressureMultiplier);
 			compute.SetFloat("viscosityStrength", viscosityStrength);
 			compute.SetVector("boundsSize", boundsSize);
+			compute.SetVector("boundsCentre", boundsCentre);
 			compute.SetVector("obstacleSize", obstacleSize);
 			compute.SetVector("obstacleCentre", obstacleCentre);
 
@@ -243,7 +249,7 @@ namespace Seb.Fluid2D.Simulation
 		void OnDrawGizmos()
 		{
 			Gizmos.color = new Color(0, 1, 0, 0.4f);
-			Gizmos.DrawWireCube(Vector2.zero, boundsSize);
+			Gizmos.DrawWireCube(boundsCentre, boundsSize);
 			Gizmos.DrawWireCube(obstacleCentre, obstacleSize);
 
 			if (Application.isPlaying)

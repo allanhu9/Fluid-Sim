@@ -84,7 +84,7 @@ const float bubbleScaleChangeSpeed;
 
 float PressureFromDensity(float density)
 {
-    return (density - targetDensity) * pressureMultiplier;
+    return max(0, (density - targetDensity)) * pressureMultiplier;
 }
 
 float NearPressureFromDensity(float nearDensity)

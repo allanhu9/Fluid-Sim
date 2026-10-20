@@ -1,0 +1,551 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{longtable}
+\usepackage{booktabs}
+
+\setlist[itemize]{leftmargin=*, itemsep=0.5em}
+\setlist[enumerate]{leftmargin=*, itemsep=0.5em}
+
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\loc}[2]{\texttt{#1}, line(s) \texttt{#2}}
+
+\title{SPH Implementation Audit: \texttt{Assets/Scripts/Simulation}}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\section{Scope and Method}
+
+This document audits the 3D fluid solver in
+\texttt{Assets/Scripts/Simulation} against the theory collected in
+\texttt{sph\_study\_notes.tex} (referred to below simply as the
+\emph{study notes}). The reviewed source files are:
+
+\begin{itemize}
+    \item \file{FluidSim.cs} --- MonoBehaviour driving the simulation loop,
+    buffer management, and per-frame parameter upload.
+    \item \file{Spawner3D.cs} --- initial particle placement.
+    \item \file{Compute/FluidSim.compute} --- all GPU kernels (external
+    forces, spatial hashing, reordering, density, pressure, viscosity,
+    position integration, density-texture rendering, and foam/spray/bubble
+    particles).
+    \item \file{Compute/FluidMaths3D.hlsl} --- smoothing-kernel
+    definitions.
+    \item \file{Compute/SpatialHash3D.hlsl} --- uniform-grid cell hashing
+    helpers.
+    \item \file{Assets/Scripts/Helpers/SpatialHash/SpatialHash.cs} ---
+    (outside \texttt{Simulation}, but instantiated directly by
+    \file{FluidSim.cs}) wraps the GPU counting sort used to build the
+    neighbor lookup table.
+\end{itemize}
+
+For each SPH concept, the exact implementation is identified with file and
+line references, and cross-referenced to the corresponding section of the
+study notes. The final section lists mechanisms described in the study notes
+(or standard in the wider SPH literature) that are \emph{not} present in this
+codebase, together with suggested improvements.
+
+\section{Spatial Discretization and Neighbor Search}
+
+The study notes describe discretization abstractly (Section 4, particularly
+\emph{What Is Discretization?}, study notes lines 540--550) but do not detail
+a specific neighbor-search algorithm; they point to Ihmsen et al.\ (2014),
+\emph{SPH Fluids in Computer Graphics}, as the reference survey for
+neighborhood search (study notes lines 994--999).
+
+The implementation uses a \textbf{uniform background grid with spatial
+hashing}, the standard approach surveyed in that paper:
+
+\begin{itemize}
+    \item \textbf{Cell indexing.} \loc{SpatialHash3D.hlsl}{46--48}
+    (\texttt{GetCell3D}) maps a world position to an integer cell coordinate
+    by dividing by the smoothing radius, i.e.\ cell size equals the kernel
+    support $h$, matching the usual convention that at most the 27 cells in a
+    $3\times3\times3$ block around a particle can contain neighbors within
+    $h$.
+    \item \textbf{Hashing.} \loc{SpatialHash3D.hlsl}{53--63}
+    (\texttt{HashCell3D}) hashes the cell coordinate using large prime
+    multipliers (lines 41--43) combined with a block-wise wrap-around
+    (block size 50) to reduce large-coordinate overflow issues, then
+    \loc{SpatialHash3D.hlsl}{65--68} (\texttt{KeyFromHash}) reduces the hash
+    modulo the particle count to produce a bounded table key.
+    \item \textbf{27-cell neighbor stencil.} \loc{SpatialHash3D.hlsl}{1--39}
+    defines the fixed \texttt{offsets3D[27]} array enumerating every
+    neighboring cell offset in 3D.
+    \item \textbf{Key generation kernel.} \loc{FluidSim.compute}{146--164}
+    (\texttt{UpdateSpatialHash}) computes a key per particle from its
+    \emph{predicted} position (see Section~\ref{sec:timeintegration}).
+    \item \textbf{Sort and offset table.} The keys are sorted with a GPU
+    counting sort and converted into a start-offset table by
+    \texttt{SpatialHash.Run} (\file{Helpers/SpatialHash/SpatialHash.cs},
+    lines 30--36), which calls \texttt{GPUCountSort} and
+    \texttt{SpatialOffsetCalculator}. This produces, for each hashed key, the
+    index at which that key's particle run begins in the sorted array ---
+    the same ``counting sort into an offset table'' neighbor-search strategy
+    discussed by Ihmsen et al.
+    \item \textbf{Cache-coherent reordering.} \loc{FluidSim.compute}{165--185}
+    (\texttt{Reorder} and \texttt{ReorderCopyBack}) physically rearrange
+    \texttt{Positions}, \texttt{PredictedPositions}, and \texttt{Velocities}
+    into sorted order so that later neighbor loops read contiguous memory
+    instead of indirecting through \texttt{SortedIndices} on every access.
+    This is a GPU-performance optimization with no direct analogue in the
+    study notes, but it materially affects achievable particle counts.
+    \item \textbf{Neighbor traversal.} The shared pattern used in
+    \texttt{CalculateDensities}, \texttt{CalculatePressureForce},
+    \texttt{CalculateViscosity}, \texttt{UpdateDensityTexture}, and
+    \texttt{UpdateWhiteParticles} (e.g.\ \loc{FluidSim.compute}{187--226})
+    loops over the 27 neighboring cells, looks up each cell's start offset,
+    and walks forward through the sorted array until the key changes,
+    discarding neighbors outside the squared smoothing radius.
+\end{itemize}
+
+\section{Smoothing Kernels}
+
+The study notes derive and verify a single kernel in detail: the
+\textbf{cubic B-spline ($M_4$) kernel} (Section 4.2.3, study notes lines
+676--753), including its normalization constants $\sigma_1,\sigma_2,\sigma_3$
+and its piecewise gradient (study notes lines 851--863). The implementation
+does \emph{not} use the cubic spline. Instead, \file{FluidMaths3D.hlsl}
+implements the kernel family popularized by M\"uller, Charypar, and Gross
+(2003) (cited in study notes lines 950--955):
+
+\begin{itemize}
+    \item \textbf{Poly6}, \loc{FluidMaths3D.hlsl}{17--26}
+    (\texttt{SmoothingKernelPoly6}): $W\propto(h^2-r^2)^3$. Used only by the
+    viscosity kernel (\loc{FluidSim.compute}{343, 490--509}); see
+    Section~\ref{sec:viscosity}.
+    \item \textbf{Spiky, power 2}, \loc{FluidMaths3D.hlsl}{39--47}
+    (\texttt{SpikyKernelPow2}) and its derivative
+    \loc{FluidMaths3D.hlsl}{59--67} (\texttt{DerivativeSpikyPow2}): used as
+    the \emph{density} kernel (\loc{FluidMaths3D.hlsl}{69--73},
+    \texttt{DensityKernel}/\texttt{DensityDerivative}). Using a
+    Spiky-type kernel (non-zero derivative as $r\to0$) for density, rather
+    than the smoother Poly6 kernel that is more conventional for density
+    summation, is a deliberate anti-clustering choice: Poly6's derivative
+    vanishes at $r=0$, which lets particles approach arbitrarily closely
+    without a growing density gradient to push them apart, whereas Spiky's
+    non-vanishing derivative keeps the density gradient finite and repulsive
+    at small separations.
+    \item \textbf{Spiky, power 3}, \loc{FluidMaths3D.hlsl}{28--36}
+    (\texttt{SpikyKernelPow3}) and its derivative
+    \loc{FluidMaths3D.hlsl}{49--57} (\texttt{DerivativeSpikyPow3}): used as
+    the \emph{near-density} kernel (\loc{FluidMaths3D.hlsl}{75--83},
+    \texttt{NearDensityKernel}/\texttt{NearDensityDerivative}); see
+    Section~\ref{sec:nearpressure}.
+    \item \textbf{Linear kernel}, \loc{FluidMaths3D.hlsl}{8--15}
+    (\texttt{LinearKernel}): defined but \emph{never called} anywhere in
+    \file{FluidSim.compute}. Dead code / unused leftover.
+\end{itemize}
+
+All normalization constants (\texttt{K\_SpikyPow2}, \texttt{K\_SpikyPow3},
+\texttt{K\_SpikyPow2Grad}, \texttt{K\_SpikyPow3Grad}) are declared
+uninitialized in the shader (\loc{FluidMaths3D.hlsl}{3--6}) and are uploaded
+once per frame from the CPU side by \texttt{UpdateSmoothingConstants}
+(\loc{FluidSim.cs}{339--351}), which recomputes them only when
+\texttt{smoothingRadius} changes. This mirrors the study notes' general
+normalization procedure (study notes lines 716--730) but specialized
+in closed form to the Spiky kernels rather than computed via the generic
+integral $\int_0^1 f(q)q^{d-1}dq$.
+
+Notably, the implementation never explicitly includes a particle mass $m_j$
+in any kernel sum (see Section~\ref{sec:notimplemented}); all sums are of the
+unweighted kernel value, which is only correct if every particle is assumed
+to carry equal, implicitly-unit mass.
+
+\section{Density and Near-Density Fields}
+
+\loc{FluidSim.compute}{187--226} (\texttt{CalculateDensitiesAtPoint}) and
+the wrapping kernel \loc{FluidSim.compute}{229--241}
+(\texttt{CalculateDensities}) implement the \textbf{summation density}
+approach described in the study notes,
+\begin{equation*}
+    \rho_i \approx \sum_j m_j W_{ij}
+\end{equation*}
+(study notes lines 822--827), but with $m_j\equiv1$ and $W_{ij}=$
+\texttt{DensityKernel}. Alongside the ordinary density, a second
+\textbf{near-density} field $\rho_i^{\text{near}}=\sum_j
+\texttt{NearDensityKernel}(r_{ij},h)$ is accumulated in the same loop and
+returned as the second component of the \texttt{float2} result
+(\loc{FluidSim.compute}{222--224}). Both fields are evaluated using
+\emph{predicted} positions, not the current positions (see
+Section~\ref{sec:timeintegration}).
+
+This dual density/near-density scheme is not discussed anywhere in the study
+notes or its reading list; it is a lineage from Clavet, Lowe, and Beaudoin's
+\emph{Particle-based Viscoelastic Fluid Simulation} (2005)
+``double density relaxation'' technique, adapted here into a conventional
+force-based (rather than position-relaxation-based) SPH solver. The study
+notes' paper list (Section 5) jumps from M\"uller et al.\ 2003 directly to
+Monaghan 2005 and Becker--Teschner 2007 (study notes lines 950--969) without
+covering this intermediate near-pressure technique, so this is a method
+present in the code but absent from the notes.
+
+\section{Pressure Closure and Near-Pressure Stabilization}
+\label{sec:nearpressure}
+
+The study notes' Section 2.1.4 (\emph{Pressure Closure}, study notes lines
+260--292) presents two closures: WCSPH with Tait's equation
+$p=\frac{\rho_0c_0^2}{\gamma}\left[(\rho/\rho_0)^\gamma-1\right]$, and
+incompressible/projection SPH with a pressure Poisson equation. The
+implementation uses neither in full. Instead,
+\loc{FluidSim.compute}{85--88} (\texttt{PressureFromDensity}) implements the
+\emph{linearized} equation of state
+\begin{equation*}
+    p_i = (\rho_i - \rho_{\text{target}})\cdot k_{\text{pressure}},
+\end{equation*}
+i.e.\ Tait's equation with $\gamma=1$ and no reference speed of sound,
+exposed as \texttt{targetDensity} and \texttt{pressureMultiplier}
+(\loc{FluidSim.cs}{22--23}). This is the simplified stiffness relation used
+in M\"uller et al.\ (2003) rather than the more general exponentiated Tait
+form the study notes write out --- the notes describe the general WCSPH
+family (study notes lines 437--443 also discuss the $\gamma$ exponent) but
+the code implements only its simplest linear member.
+
+A second, independent pressure-like term, \texttt{NearPressureFromDensity}
+(\loc{FluidSim.compute}{90--93}), computes
+$p_i^{\text{near}}=\rho_i^{\text{near}}\cdot k_{\text{near}}$
+(\texttt{nearPressureMultiplier}, \loc{FluidSim.cs}{24}) from the
+near-density field of Section 4. Both pressures are combined, symmetrized
+between particle pairs, and converted into a force in
+\loc{FluidSim.compute}{267--346} (\texttt{CalculatePressureForce}):
+\begin{equation*}
+    \mathbf{f}_i^{\text{pressure}} = -\sum_j
+        \nabla_iW_{ij}\,\frac{p_i+p_j}{2\rho_j}
+        -\sum_j
+        \nabla_iW^{\text{near}}_{ij}\,\frac{p_i^{\text{near}}+p_j^{\text{near}}}{2\rho_j^{\text{near}}}
+\end{equation*}
+(signs folded into the kernel-derivative helper functions;
+\loc{FluidSim.compute}{329--331}). Using the \emph{averaged} pressure
+$(p_i+p_j)/2$ for the pair force is exactly the symmetric pairwise
+formulation the study notes credit with exact momentum conservation (study
+notes lines 104--107, \emph{Conservation and coupling}). The near-pressure
+term is an additional short-range repulsive correction that prevents the
+particle clustering/tensile-instability failure mode the study notes warn
+about under ``Stability artifacts'' (study notes lines 126--131), without
+needing the artificial-pressure or $\delta$-SPH corrections the notes list
+as alternatives (study notes lines 459--463).
+
+The resulting acceleration is applied directly to velocity
+(\loc{FluidSim.compute}{347--349}), and an ad hoc aerodynamic drag term is
+applied to particles with fewer than 8 neighbors
+(\loc{FluidSim.compute}{351--355}) to damp free-flying/airborne particles
+--- an engineering stabilization with no counterpart in the study notes.
+
+\section{Viscosity}
+\label{sec:viscosity}
+
+The study notes' momentum equation includes a physical viscous term
+$\mu\nabla^2\mathbf{v}$ (study notes lines 224--232), and Section 3.4
+separately lists ``XSPH velocity smoothing'' as a distinct
+\emph{regularization} technique, not a physical viscosity model (study notes
+lines 464--468). The implementation's \texttt{CalculateViscosity} kernel
+(\loc{FluidSim.compute}{409--459}) computes
+\begin{equation*}
+    \Delta\mathbf{v}_i = \texttt{viscosityStrength}\cdot\Delta t\sum_j
+        (\mathbf{v}_j-\mathbf{v}_i)\,W^{\text{poly6}}(r_{ij},h)
+\end{equation*}
+and adds it directly to particle velocity (\loc{FluidSim.compute}{456--458}).
+This is XSPH velocity averaging, not a discretized Laplacian of velocity: it
+pulls each particle's velocity toward the kernel-weighted average of its
+neighbors' velocities, rather than modeling a stress-divergence force scaled
+by dynamic viscosity $\mu$. It therefore matches the regularization
+technique named in study notes Section 3.4 rather than the physical-viscosity
+discretizations referenced via Morris, Fox, and Zhu (1997) in the study
+notes' paper list (study notes lines 940--944). The kernel is skipped
+entirely when \texttt{viscosityStrength == 0} (\loc{FluidSim.cs}{332}), which
+is also the default value (\loc{FluidSim.cs}{25}).
+
+\section{Time Integration}
+\label{sec:timeintegration}
+
+The study notes' Section 3.5 lists explicit Euler, leapfrog, Verlet,
+predictor--corrector, and Runge--Kutta as integrator choices with a CFL-type
+timestep restriction (study notes lines 469--494). The implementation uses a
+\textbf{semi-implicit (symplectic) Euler} scheme with position prediction and
+fixed sub-stepping:
+
+\begin{itemize}
+    \item \textbf{Gravity and prediction}, \loc{FluidSim.compute}{133--144}
+    (\texttt{ExternalForces}): velocity is updated by gravity
+    ($\mathbf{v} \mathrel{+}= \mathbf{g}\,\Delta t$), and a
+    \emph{predicted} position is computed as $\mathbf{x} + \mathbf{v}\cdot
+    \frac1{120}$ (a fixed $1/120\,\text{s}$ look-ahead, independent of the
+    actual timestep) rather than the true $\Delta t$. All density/pressure
+    computations in this step then use these predicted positions, not the
+    actual particle positions, so the pressure solve reacts to where
+    particles are about to be rather than where they currently sit. This
+    look-ahead/prediction trick is not discussed in the study notes.
+    \item \textbf{Position integration}, \loc{FluidSim.compute}{461--475}
+    (\texttt{UpdatePositions}): the real \texttt{Positions} buffer is
+    advanced by the final velocity, $\mathbf{x}\mathrel{+}=\mathbf{v}\,\Delta
+    t$, after which boundary collisions are resolved (Section
+    \ref{sec:boundary}).
+    \item \textbf{Fixed sub-stepping instead of a CFL formula.} Rather than
+    computing $\Delta t$ from the stability formula in study notes lines
+    476--486 (which involves $c_0$, $v_{\text{sig}}$, $a_{\max}$, and $\nu$),
+    \texttt{RunSimulationFrame} (\loc{FluidSim.cs}{284--308}) simply divides
+    the frame's delta time by a fixed, user-set
+    \texttt{iterationsPerFrame} (\loc{FluidSim.cs}{18}) and runs that many
+    identical sub-steps (\loc{FluidSim.cs}{290--293}). An optional frame-rate
+    floor, \texttt{maxTimestepFPS} (\loc{FluidSim.cs}{17}), caps the
+    per-frame $\Delta t$ so that a slow frame runs the simulation in slow
+    motion instead of taking a single large, unstable step --- a crude but
+    effective proxy for the notes' CFL safety coefficient
+    $C_{\text{CFL}}$ (study notes lines 487--489), implemented without ever
+    measuring particle velocity or acceleration.
+\end{itemize}
+
+\section{Boundary Handling}
+\label{sec:boundary}
+
+The study notes discuss boundary treatment at several points: as a
+limitation of SPH in general (``Solid walls are not automatically
+represented accurately,'' study notes lines 132--134), as a required initial/
+boundary condition (Section 2.1.6, study notes lines 315--331), as a tunable
+parameter category (Section 3.6, study notes lines 496--504), and via the
+Adami--Hu--Adams (2012) generalized wall boundary condition in the paper list
+(study notes lines 988--992). All of these describe \emph{boundary
+particles} (ghost, dummy, or dynamic particles that participate in the SPH
+sums).
+
+The implementation does not use boundary particles at all. Collisions are
+resolved purely geometrically in \texttt{ResolveCollisions}
+(\loc{FluidSim.compute}{101--131}): the box is transformed into local
+(unit-cube) space via \texttt{worldToLocal}, any axis whose local coordinate
+exceeds $\pm0.5$ is clamped back to the boundary, and the corresponding
+velocity component is negated and scaled by \texttt{collisionDamping}
+(\loc{FluidSim.cs}{26}), then both are transformed back to world space. This
+supports an arbitrarily translated/rotated/scaled rectangular container (via
+\texttt{localToWorld}/\texttt{worldToLocal}, set from the \texttt{FluidSim}
+transform in \loc{FluidSim.cs}{372--373}) at negligible cost, but it is a
+purely kinematic, perfectly-reflecting-with-damping wall model: it has no
+SPH pressure/viscosity interaction with wall particles, so no-slip,
+free-slip, or partial-slip conditions (study notes lines 500--501) cannot be
+modeled, and only convex rectangular-box containers are supported ---
+arbitrary solid geometry (e.g.\ ramps, meshes, moving rigid bodies) is out of
+scope for this routine.
+
+Two uniform parameters, \texttt{edgeForce} and \texttt{edgeForceDst}
+(\loc{FluidSim.compute}{44--45}), are declared but \emph{never read} anywhere
+in \file{FluidSim.compute}. Likewise, the mouse/pointer interaction uniforms
+\texttt{interactionInputPoint}, \texttt{interactionInputStrength}, and
+\texttt{interactionInputRadius} (\loc{FluidSim.compute}{51--53}) are declared
+but never referenced by any kernel. Both appear to be vestigial from a 2D
+sibling implementation of this simulation (not present in the audited
+\texttt{Simulation} folder) and represent dead/unused code paths here: there
+is currently no user-interaction force (e.g., a mouse-driven push/pull) and
+no additional soft edge-repulsion force beyond the hard
+\texttt{ResolveCollisions} clamp.
+
+\section{GPU-Specific Structure}
+
+Beyond the numerical method itself, the solver is organized as 11 compute
+kernels dispatched once per sub-step from \texttt{RunSimulationStep}
+(\loc{FluidSim.cs}{323--337}):
+\texttt{ExternalForces} $\to$ \texttt{UpdateSpatialHash} $\to$ (GPU sort)
+$\to$ \texttt{Reorder} $\to$ \texttt{ReorderCopyBack} $\to$
+\texttt{CalculateDensities} $\to$ \texttt{CalculatePressureForce} $\to$
+(optionally) \texttt{CalculateViscosity} $\to$ \texttt{UpdatePositions}.
+All buffers are plain \texttt{ComputeBuffer}s created and bound once in
+\texttt{Initialize} (\loc{FluidSim.cs}{96--255}); there is no
+dynamic/adaptive resizing of the particle count at runtime (the spawn count
+is fixed by \file{Spawner3D.cs} at scene start, \loc{Spawner3D.cs}{20--33}).
+This is an implementation-architecture detail rather than an SPH numerical
+method, but it bounds what the solver can do (e.g., no particle
+emitters/sinks, no adaptive refinement) independent of the physics used.
+
+\section{Extensions Beyond Classical SPH: Foam, Spray, and Bubbles}
+
+A substantial portion of \file{FluidSim.compute}
+(\loc{FluidSim.compute}{356--607}, inside \texttt{CalculatePressureForce},
+plus the \texttt{UpdateWhiteParticles} and
+\texttt{WhiteParticlePrepareNextFrame} kernels,
+\loc{FluidSim.compute}{490--607}) implements a secondary particle system for
+visual foam/spray/bubble effects, following Ihmsen, Akinci, Gissler, and
+Teschner's \emph{Unified Spray, Foam and Bubbles for Particle-Based Fluids}
+(SIGGRAPH 2012) --- a paper not included in the study notes' reading list
+(Section 5), even though it is a direct companion to the Ihmsen et al.\ 2014
+survey that \emph{is} listed (study notes lines 994--999). Specifically:
+
+\begin{itemize}
+    \item \textbf{Trapped-air potential.} For each fluid particle, a
+    ``weighted velocity difference'' is accumulated from converging
+    neighbor velocity pairs (\loc{FluidSim.compute}{313--323}), then combined
+    with a kinetic-energy factor to produce a probabilistic spawn count for
+    new foam/spray particles (\loc{FluidSim.compute}{358--366}), sampled over
+    a cylindrical volume swept along the particle's velocity
+    (\loc{FluidSim.compute}{368--388}).
+    \item \textbf{Classification.} Each foam/spray/bubble particle counts its
+    fluid neighbors in \texttt{UpdateWhiteParticles}
+    (\loc{FluidSim.compute}{509--540}) and is classified as spray (few
+    neighbors), bubble (many neighbors), or foam (in between)
+    (\loc{FluidSim.compute}{542--545}), each with distinct motion rules:
+    foam is advected at the local fluid velocity and dissolves over time
+    (\loc{FluidSim.compute}{547--553}); bubbles rise via a buoyancy term and
+    relax toward local fluid velocity (\loc{FluidSim.compute}{555--561}); and
+    spray falls under gravity with quadratic drag
+    (\loc{FluidSim.compute}{563--568}).
+    \item \textbf{Lifetime compaction.} Dead particles are stream-compacted
+    out via an atomic counter and a ping-pong buffer
+    (\texttt{WhiteParticlesCompacted}), with the surviving count and buffer
+    copied back for the next frame (\loc{FluidSim.compute}{572--607}).
+\end{itemize}
+
+This is a complete, correctly-attributed (if uncredited in-file) 3D
+implementation of a well-known SPH post-processing technique, but it is
+visual/decorative: it reads the fluid simulation's state and does not feed
+back into the pressure/density/viscosity solve (other than the base fluid
+kernels it reuses for neighbor search).
+
+\section{Volumetric Density Resampling}
+
+\texttt{UpdateDensityTexture} (\loc{FluidSim.compute}{478--488}) resamples
+\texttt{CalculateDensitiesAtPoint} on a regular voxel grid sized to the
+container's aspect ratio (\loc{FluidSim.cs}{310--321}, driven by
+\texttt{renderToTex3D}/\texttt{densityTextureRes},
+\loc{FluidSim.cs}{41--42}) and writes the scalar density field into an
+\texttt{RWTexture3D} for external volumetric rendering (e.g.\ ray marching or
+isosurfacing, not present in this folder). This reuses the same summation-
+density kernel already covered in Section 4, evaluated at arbitrary points
+rather than at particle positions --- a direct application of the
+continuous-reconstruction idea in study notes Section 4.2
+(\emph{How Kernel Smoothing Produces a Continuous Approximation}, study
+notes lines 551--775), $\langle A(\mathbf{x})\rangle \approx \sum_j m_j
+W(\mathbf{x}-\mathbf{x}_j,h)$ (study notes line 767), evaluated off-particle.
+
+\section{Summary Table}
+
+\begin{longtable}{@{}p{3.6cm}p{5.6cm}p{5.8cm}@{}}
+\toprule
+\textbf{SPH Aspect} & \textbf{Implementation} & \textbf{Location} \\
+\midrule\endhead
+Neighbor search & Uniform grid + spatial hash + GPU counting sort & \file{SpatialHash3D.hlsl}:1--68; \file{FluidSim.compute}:146--185; \file{Helpers/SpatialHash/SpatialHash.cs}:30--36 \\
+Density kernel & Spiky power-2 (non-standard choice, anti-clustering) & \file{FluidMaths3D.hlsl}:39--47, 69--73 \\
+Near-density kernel & Spiky power-3 & \file{FluidMaths3D.hlsl}:28--36, 75--83 \\
+Viscosity kernel & Poly6 (used for XSPH, not Laplacian viscosity) & \file{FluidMaths3D.hlsl}:17--26 \\
+Density summation & $\rho_i=\sum_j W_{ij}$, unit mass assumed & \file{FluidSim.compute}:187--226 \\
+Pressure closure & Linearized equation of state $p=(\rho-\rho_0)k$ & \file{FluidSim.compute}:85--88 \\
+Near-pressure (stabilization) & Clavet-style second pressure field & \file{FluidSim.compute}:90--93, 267--346 \\
+Pressure force & Symmetrized pairwise force & \file{FluidSim.compute}:326--332 \\
+Viscosity & XSPH velocity smoothing & \file{FluidSim.compute}:409--459 \\
+Time integration & Semi-implicit Euler + predicted positions + fixed sub-steps & \file{FluidSim.compute}:133--144, 461--475; \file{FluidSim.cs}:284--308 \\
+Boundary handling & Kinematic box clamp + damped reflection & \file{FluidSim.compute}:101--131 \\
+Foam/spray/bubbles & Ihmsen et al.\ 2012 classification \& transport & \file{FluidSim.compute}:356--388, 490--607 \\
+Volumetric field export & Density resampled to 3D texture & \file{FluidSim.compute}:478--488 \\
+\bottomrule
+\end{longtable}
+
+\section{Not Implemented / Possible Improvements}
+\label{sec:notimplemented}
+
+The following SPH mechanisms are discussed in the study notes (or are
+standard extensions in the wider literature) but have no corresponding code
+in \texttt{Simulation}:
+
+\begin{itemize}
+    \item \textbf{Explicit particle mass.} Study notes lines 758, 811, and
+    822--827 all carry a per-particle mass $m_j$ through every kernel sum.
+    The implementation has no mass field in any buffer or kernel; it is
+    implicitly $1$ everywhere. This only happens to be correct because the
+    spawner (\file{Spawner3D.cs}) places particles on a uniform grid of
+    constant spacing, so variable-resolution, variable-density, or
+    multi-material setups cannot be represented without first adding a
+    stored mass (or volume) value and threading it through
+    \texttt{CalculateDensitiesAtPoint} and \texttt{CalculatePressureForce}.
+    \item \textbf{Full Tait equation of state / Mach-number-based sound
+    speed.} Study notes lines 262--271 and 433--436 describe choosing $c_0$
+    from a target Mach number and using exponent $\gamma$ (commonly 7 for
+    water). The code's \texttt{pressureMultiplier} /
+    \texttt{targetDensity} are free-standing stiffness constants with no
+    physical sound-speed derivation, so density-error vs.\ stiffness
+    trade-offs (study notes lines 433--436) cannot currently be reasoned
+    about quantitatively; exposing an equivalent $c_0$ and Mach-number
+    readout would make tuning more principled.
+    \item \textbf{Incompressible/iterative pressure solvers (ISPH, PCISPH,
+    DFSPH).} Study notes lines 271--292 and the Cummins--Rudman and
+    Solenthaler--Pajarola references (study notes lines 947--949, 973--977)
+    describe enforcing $\nabla\cdot\mathbf{v}=0$ via a pressure Poisson
+    equation or predictive-corrective iteration. The simulation is purely
+    weakly compressible with a single-pass explicit pressure force, so it is
+    more prone to timestep-limited stiffness and audible/visible
+    compressibility artifacts at high stiffness; adopting a PCISPH-style
+    predict/correct loop (already partially hinted at by the existing
+    ``predicted position'' mechanism in Section~\ref{sec:timeintegration})
+    would be a natural incremental upgrade.
+    \item \textbf{Physical viscosity discretization.} Study notes lines
+    224--232 give the Navier--Stokes viscous term
+    $\mu\nabla^2\mathbf{v}$, and the Morris--Fox--Zhu (1997) reference
+    (study notes lines 940--944) gives a concrete SPH Laplacian for it. Only
+    the non-physical XSPH smoothing (Section~\ref{sec:viscosity}) is
+    implemented, so \texttt{viscosityStrength} does not correspond to a
+    measurable kinematic viscosity $\nu$ and cannot be validated against a
+    Reynolds-number-based benchmark (study notes lines 374--378).
+    \item \textbf{Artificial viscosity ($\alpha,\beta$) and $\delta$-SPH
+    density diffusion.} Study notes lines 452--463 list both as standard
+    stabilizers for shocks and density/pressure noise. Neither is present;
+    the only anti-noise/anti-clustering mechanisms are the near-pressure
+    term (Section~\ref{sec:nearpressure}) and the ad hoc airborne-particle
+    drag (\loc{FluidSim.compute}{351--355}).
+    \item \textbf{Surface tension.} Study notes Section 3.1 (lines
+    384--386) and the momentum equation (study notes line 232,
+    $\mathbf{f}_s$) include an interfacial surface-tension force, and it is
+    explicitly one of the features of M\"uller et al.\ (2003) cited in the
+    reading list (study notes lines 950--955). No cohesion or curvature
+    force of any kind is computed in \file{FluidSim.compute}; free-surface
+    behavior is governed solely by the near-pressure anti-clustering term,
+    so droplet break-up/cohesion behavior cannot be tuned independently of
+    overall fluid stiffness.
+    \item \textbf{Boundary/ghost particles and no-slip walls.} As discussed
+    in Section~\ref{sec:boundary}, only a kinematic box clamp exists; there
+    is no SPH-consistent wall treatment such as Adami--Hu--Adams (2012)
+    (study notes lines 988--992), so wall friction, non-box geometry, and
+    moving/rotating solid obstacles cannot currently be modeled without a
+    substantial boundary-handling addition.
+    \item \textbf{CFL-based adaptive timestep.} Study notes lines 469--489
+    give an explicit formula for $\Delta t$ from $h$, $c_0$, $a_{\max}$, and
+    $\nu$. The code only divides a user-chosen frame time by a fixed
+    \texttt{iterationsPerFrame} and clamps the frame time via
+    \texttt{maxTimestepFPS} (Section~\ref{sec:timeintegration}); it never
+    measures per-particle velocity or acceleration to adapt the timestep,
+    so a sudden high-energy event (e.g.\ a large splash) is not automatically
+    guarded against beyond whatever margin the fixed sub-step count happens
+    to provide.
+    \item \textbf{Dead/unused interaction and edge-force uniforms.} As noted
+    in Section~\ref{sec:boundary}, \texttt{edgeForce}, \texttt{edgeForceDst},
+    \texttt{interactionInputPoint}, \texttt{interactionInputStrength}, and
+    \texttt{interactionInputRadius} are declared in
+    \file{FluidSim.compute}:44--53 but never read. If interactive
+    mouse/controller forcing or a soft edge-repulsion force is desired (both
+    common in SPH demos, including presumably a 2D counterpart to this
+    project), the shader-side uniforms already exist and only need a kernel
+    that consumes them plus CPU-side code to populate them per frame.
+    \item \textbf{Adaptive/variable smoothing length.} Study notes lines
+    408--416 discuss $h=\eta\Delta x$ and adaptive $h_i$ for variable
+    resolution. \texttt{smoothingRadius} is a single global scalar
+    (\loc{FluidSim.cs}{21}); there is no per-particle $h_i$ or refinement
+    criterion.
+    \item \textbf{Energy equation / thermal and multiphase effects.} Study
+    notes Section 2.1.5 (lines 293--313) and the multiphase remarks in
+    Section 2.1.6 are entirely out of scope here, which is reasonable for a
+    single-phase isothermal graphics fluid but worth stating explicitly:
+    there is exactly one fluid phase/material and no temperature field.
+    \item \textbf{Convergence/validation tooling.} Study notes Section 3.7
+    (lines 505--525) recommends refinement studies (halving $\Delta x$ and
+    $\Delta t$, tightening solver tolerances) to confirm results are not
+    parameter-dependent. No automated convergence test, benchmark scene, or
+    regression harness exists in this folder; adding even a simple
+    dam-break or hydrostatic-pressure test scene with a known analytic or
+    reference result would make future parameter or kernel changes easier to
+    validate.
+\end{itemize}
+
+\end{document}

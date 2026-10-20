@@ -5,7 +5,9 @@ namespace Seb.Helpers.Internal
 {
 	public class SpatialOffsetCalculator
 	{
-		readonly ComputeShader cs = ComputeHelper.LoadComputeShader("SpatialOffsets");
+		// Instantiated so that each calculator (one per simulation instance) gets its own independent
+		// kernel/buffer bindings instead of sharing state through the cached Resources-loaded asset.
+		readonly ComputeShader cs = Object.Instantiate(ComputeHelper.LoadComputeShader("SpatialOffsets"));
 		static readonly int NumInputs = Shader.PropertyToID("numInputs");
 		static readonly int Offsets = Shader.PropertyToID("Offsets");
 		static readonly int SortedKeys = Shader.PropertyToID("SortedKeys");
@@ -29,6 +31,11 @@ namespace Seb.Helpers.Internal
 			cs.SetBuffer(offsetsKernel, Offsets, offsets);
 			cs.SetBuffer(offsetsKernel, SortedKeys, sortedKeys);
 			ComputeHelper.Dispatch(cs, sortedKeys.count, kernelIndex: offsetsKernel);
+		}
+
+		public void Release()
+		{
+			Object.Destroy(cs);
 		}
 	}
 }

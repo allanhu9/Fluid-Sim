@@ -43,6 +43,7 @@ namespace Seb.Helpers
 		public void Release()
 		{
 			gpuSort.Release();
+			spatialOffsetsCalc.Release();
 			ComputeHelper.Release(SpatialKeys, SpatialIndices, SpatialOffsets);
 		}
 

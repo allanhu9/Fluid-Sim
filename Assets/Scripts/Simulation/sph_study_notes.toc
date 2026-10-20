@@ -1,0 +1,34 @@
+\contentsline {section}{\numberline {1}Fluid Simulation Methods and Where SPH Fits}{2}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Eulerian Mesh-Based Methods}{2}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Lagrangian and Mesh-Free Methods}{2}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Hybrid Particle--Grid Methods}{3}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}Benefits of SPH}{3}{subsection.1.4}%
+\contentsline {subsection}{\numberline {1.5}Limitations of SPH}{3}{subsection.1.5}%
+\contentsline {section}{\numberline {2}Context in Fluid Simulation: Functions and Partial Differential Operators}{4}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Governing Equations}{4}{subsection.2.1}%
+\contentsline {subsubsection}{\numberline {2.1.1}Lagrangian Description and Material Derivative}{4}{subsubsection.2.1.1}%
+\contentsline {subsubsection}{\numberline {2.1.2}Conservation of Mass}{4}{subsubsection.2.1.2}%
+\contentsline {subsubsection}{\numberline {2.1.3}Conservation of Linear Momentum}{5}{subsubsection.2.1.3}%
+\contentsline {subsubsection}{\numberline {2.1.4}Pressure Closure}{5}{subsubsection.2.1.4}%
+\contentsline {subsubsection}{\numberline {2.1.5}Conservation of Energy}{6}{subsubsection.2.1.5}%
+\contentsline {subsubsection}{\numberline {2.1.6}Initial, Boundary, and Interface Conditions}{6}{subsubsection.2.1.6}%
+\contentsline {subsubsection}{\numberline {2.1.7}Fields and Differential Operators}{6}{subsubsection.2.1.7}%
+\contentsline {section}{\numberline {3}Main Adjustable Parameters in an SPH Simulation}{7}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Physical and Model Parameters}{7}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Resolution, Particles, and Kernel}{7}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Compressibility and Pressure Parameters}{8}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}Viscosity, Stabilization, and Particle Regularization}{8}{subsection.3.4}%
+\contentsline {subsection}{\numberline {3.5}Time Integration and Stability Controls}{8}{subsection.3.5}%
+\contentsline {subsection}{\numberline {3.6}Boundary and Interaction Parameters}{9}{subsection.3.6}%
+\contentsline {subsection}{\numberline {3.7}Practical Parameter-Selection Order}{9}{subsection.3.7}%
+\contentsline {section}{\numberline {4}Discretization and Its Purpose}{9}{section.4}%
+\contentsline {subsection}{\numberline {4.1}What Is Discretization?}{9}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}How Kernel Smoothing Produces a Continuous Approximation}{10}{subsection.4.2}%
+\contentsline {subsubsection}{\numberline {4.2.1}Field Quantities}{10}{subsubsection.4.2.1}%
+\contentsline {subsubsection}{\numberline {4.2.2}The Dirac Delta Distribution}{10}{subsubsection.4.2.2}%
+\contentsline {subsubsection}{\numberline {4.2.3}The Cubic Spline Kernel}{11}{subsubsection.4.2.3}%
+\contentsline {subsection}{\numberline {4.3}Worked PDE Example: The Continuity Equation}{13}{subsection.4.3}%
+\contentsline {subsubsection}{\numberline {4.3.1}How SPH Processes the Field Quantities}{13}{subsubsection.4.3.1}%
+\contentsline {subsubsection}{\numberline {4.3.2}How SPH Processes the Differential Operators}{14}{subsubsection.4.3.2}%
+\contentsline {subsubsection}{\numberline {4.3.3}The Resulting Particle Equation}{14}{subsubsection.4.3.3}%
+\contentsline {section}{\numberline {5}Major SPH Papers and Further Reading}{15}{section.5}%

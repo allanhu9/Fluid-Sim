@@ -15,7 +15,10 @@ namespace Seb.GPUSorting
 		static readonly int ID_NumInputs = Shader.PropertyToID("numInputs");
 
 		readonly Scan scan = new();
-		readonly ComputeShader cs = ComputeHelper.LoadComputeShader("CountSort");
+
+		// Instantiated so that each GPUCountSort (one per simulation instance) gets its own independent
+		// kernel/buffer bindings instead of sharing state through the cached Resources-loaded asset.
+		readonly ComputeShader cs = Object.Instantiate(ComputeHelper.LoadComputeShader("CountSort"));
 
 		ComputeBuffer sortedItemsBuffer;
 		ComputeBuffer sortedValuesBuffer;
@@ -77,6 +80,7 @@ namespace Seb.GPUSorting
 		{
 			ComputeHelper.Release(sortedItemsBuffer, sortedValuesBuffer, countsBuffer);
 			scan.Release();
+			Object.Destroy(cs);
 		}
 	}
 }

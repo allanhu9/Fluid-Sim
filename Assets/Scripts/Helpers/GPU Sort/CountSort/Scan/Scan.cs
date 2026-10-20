@@ -19,7 +19,9 @@ namespace Seb.GPUSorting
 
         public Scan()
         {
-            cs = ComputeHelper.LoadComputeShader("ScanTest");
+            // Instantiated so that each Scan (used recursively and per simulation instance) gets its own
+            // independent kernel/buffer bindings instead of sharing state through the cached Resources-loaded asset.
+            cs = Object.Instantiate(ComputeHelper.LoadComputeShader("ScanTest"));
         }
 
 
@@ -64,6 +66,7 @@ namespace Seb.GPUSorting
             {
                 ComputeHelper.Release(b.Value);
             }
+            Object.Destroy(cs);
         }
 
     }
