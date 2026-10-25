@@ -8,7 +8,7 @@ public class Spawner2D : MonoBehaviour
 
 	public Vector2 initialVelocity;
 	public float jitterStr;
-	public SpawnRegion[] spawnRegions;
+	public SpawnRegion[] spawnRegions = System.Array.Empty<SpawnRegion>();
 	public bool showSpawnBoundsGizmos;
 
 	[Header("Debug Info")]
@@ -60,8 +60,8 @@ public class Spawner2D : MonoBehaviour
 		{
 			for (int x = 0; x < numPerAxis.x; x++)
 			{
-				float tx = x / (numPerAxis.x - 1f);
-				float ty = y / (numPerAxis.y - 1f);
+				float tx = numPerAxis.x > 1 ? x / (numPerAxis.x - 1f) : 0.5f;
+				float ty = numPerAxis.y > 1 ? y / (numPerAxis.y - 1f) : 0.5f;
 
 				float px = (tx - 0.5f) * size.x + centre.x;
 				float py = (ty - 0.5f) * size.y + centre.y;
@@ -92,12 +92,14 @@ public class Spawner2D : MonoBehaviour
 		public float2[] positions;
 		public float2[] velocities;
 		public int[] spawnIndices;
+		public uint[] particleTypes;
 
 		public ParticleSpawnData(int num)
 		{
 			positions = new float2[num];
 			velocities = new float2[num];
 			spawnIndices = new int[num];
+			particleTypes = null;
 		}
 	}
 
@@ -119,7 +121,7 @@ public class Spawner2D : MonoBehaviour
 		}
 	}
 
-	void OnDrawGizmos()
+	protected virtual void OnDrawGizmos()
 	{
 		if (showSpawnBoundsGizmos && !Application.isPlaying)
 		{

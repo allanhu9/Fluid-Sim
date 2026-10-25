@@ -6,7 +6,7 @@ namespace Seb.Fluid2D.Rendering
 {
 	public class ParticleDisplay2D : MonoBehaviour
 	{
-		public FluidSim2D sim;
+		public FluidSim2DBase sim;
 		public Mesh mesh;
 		public Shader shader;
 		public float scale;

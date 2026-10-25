@@ -131,8 +131,8 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 271053318}
-  - component: {fileID: 271053319}
-  - component: {fileID: 271053320}
+  - component: {fileID: 271053324}
+  - component: {fileID: 271053325}
   - component: {fileID: 271053323}
   m_Layer: 0
   m_Name: Simulation
@@ -156,57 +156,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &271053319
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 271053315}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: bf901970f9cf132479a879d7a4acde3d, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  timeScale: 1
-  maxTimestepFPS: 60
-  iterationsPerFrame: 3
-  gravity: -12
-  collisionDamping: 0.95
-  smoothingRadius: 0.35
-  targetDensity: 55
-  pressureMultiplier: 500
-  nearPressureMultiplier: 2
-  viscosityStrength: 0.03
-  boundsSize: {x: 17.1, y: 9.3}
-  boundsCentre: {x: 0, y: 0}
-  obstacleSize: {x: 0, y: 0}
-  obstacleCentre: {x: 0, y: 0}
-  interactionRadius: 2
-  interactionStrength: 90
-  compute: {fileID: 7200000, guid: 1c77ce8de78fddb419ed2d15cae41af0, type: 3}
-  spawner2D: {fileID: 271053320}
---- !u!114 &271053320
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 271053315}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 895837b52d5fc53409ded3589d4da696, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  spawnDensity: 159
-  initialVelocity: {x: 0, y: 0}
-  jitterStr: 0.03
-  spawnRegions:
-  - position: {x: 0, y: 0.66}
-    size: {x: 6.42, y: 4.39}
-    debugCol: {r: 1, g: 0.2783019, b: 0.2783019, a: 1}
-  showSpawnBoundsGizmos: 1
-  spawnParticleCount: 4536
 --- !u!114 &271053323
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -219,7 +168,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b090cee05a6cd0e4291a0e02381231c1, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  sim: {fileID: 271053319}
+  sim: {fileID: 271053324}
   mesh: {fileID: 10210, guid: 0000000000000000e000000000000000, type: 0}
   shader: {fileID: 4800000, guid: 441b7193936682446b30d2140d15792a, type: 3}
   scale: 0.08
@@ -255,6 +204,63 @@ MonoBehaviour:
     m_NumAlphaKeys: 2
   gradientResolution: 64
   velocityDisplayMax: 6.5
+--- !u!114 &271053324
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 271053315}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6355ba8d95794eab8047b379d318bb0e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  timeScale: 1
+  maxTimestepFPS: 60
+  iterationsPerFrame: 3
+  gravity: -12
+  smoothingRadius: 0.35
+  particleMass: 1
+  targetDensity: 55
+  pressureMultiplier: 250
+  nearPressureMultiplier: 2
+  viscosityStrength: 0
+  interactionRadius: 2
+  interactionStrength: 90
+  compute: {fileID: 7200000, guid: 8ae184c3dd0d4ebeb48dc75a5fa06679, type: 3}
+  boundaryRepulsionStrength: 1
+  boundaryRepulsionRadius: 0
+  boundaryRepulsionExponent1: 12
+  boundaryRepulsionExponent2: 6
+  boundaryRepulsionMinDistanceFraction: 0.1
+  boundaryRepulsionMaxForce: 1000
+  spawner2D: {fileID: 271053325}
+--- !u!114 &271053325
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 271053315}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c954eb426c0d47a6a6486df4a01cd0d2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  spawnDensity: 55
+  initialVelocity: {x: 0, y: 0}
+  jitterStr: 0.03
+  spawnRegions:
+  - position: {x: 0, y: -0.45}
+    size: {x: 14.61, y: 7.24}
+    debugCol: {r: 1, g: 0.2783019, b: 0.2783019, a: 1}
+  showSpawnBoundsGizmos: 1
+  spawnParticleCount: 5886
+  boundsCentre: {x: 0, y: 0}
+  boundsSize: {x: 17.1, y: 9.3}
+  showBoundaryGizmos: 1
+  boundaryParticleCount: 0
 --- !u!1 &296732954
 GameObject:
   m_ObjectHideFlags: 0
@@ -359,19 +365,20 @@ MonoBehaviour:
   maxTimestepFPS: 60
   iterationsPerFrame: 3
   gravity: -12
-  collisionDamping: 0.95
   smoothingRadius: 0.35
+  particleMass: 1
   targetDensity: 55
   pressureMultiplier: 500
-  nearPressureMultiplier: 2
+  nearPressureMultiplier: 0
   viscosityStrength: 0.03
+  interactionRadius: 2
+  interactionStrength: 90
+  compute: {fileID: 7200000, guid: 26c673f9bab7b924a8ccd8629d2587c8, type: 3}
+  collisionDamping: 0.95
   boundsSize: {x: 17.1, y: 9.3}
   boundsCentre: {x: 18, y: 0}
   obstacleSize: {x: 0, y: 0}
   obstacleCentre: {x: 0, y: 0}
-  interactionRadius: 2
-  interactionStrength: 90
-  compute: {fileID: 7200000, guid: 26c673f9bab7b924a8ccd8629d2587c8, type: 3}
   spawner2D: {fileID: 296732956}
 --- !u!4 &296732958
 Transform:
