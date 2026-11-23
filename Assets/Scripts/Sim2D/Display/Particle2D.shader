@@ -15,12 +15,17 @@ Shader "Instanced/Particle2D" {
 			#pragma vertex vert
 			#pragma fragment frag
 			#pragma target 4.5
+			#pragma multi_compile_local __ BOUNDARY_PARTICLES
 
 			#include "UnityCG.cginc"
 			
 			StructuredBuffer<float2> Positions2D;
 			StructuredBuffer<float2> Velocities;
 			StructuredBuffer<float2> DensityData;
+			#if defined(BOUNDARY_PARTICLES)
+			StructuredBuffer<uint> ParticleTypes;
+			#endif
+			float4 boundaryColour;
 			float scale;
 			float4 colA;
 			Texture2D<float4> ColourMap;
@@ -36,10 +41,6 @@ Shader "Instanced/Particle2D" {
 
 			v2f vert (appdata_full v, uint instanceID : SV_InstanceID)
 			{
-				float speed = length(Velocities[instanceID]);
-				float speedT = saturate(speed / velocityMax);
-				float colT = speedT;
-				
 				float3 centreWorld = float3(Positions2D[instanceID], 0);
 				float3 worldVertPos = centreWorld + mul(unity_ObjectToWorld, v.vertex * scale);
 				float3 objectVertPos = mul(unity_WorldToObject, float4(worldVertPos.xyz, 1));
@@ -47,7 +48,18 @@ Shader "Instanced/Particle2D" {
 				v2f o;
 				o.uv = v.texcoord;
 				o.pos = UnityObjectToClipPos(objectVertPos);
-				o.colour = ColourMap.SampleLevel(linear_clamp_sampler, float2(colT, 0.5), 0);
+				#if defined(BOUNDARY_PARTICLES)
+				if (ParticleTypes[instanceID] == 1)
+				{
+					o.colour = boundaryColour.rgb;
+				}
+				else
+				#endif
+				{
+					float speed = length(Velocities[instanceID]);
+					float speedT = saturate(speed / velocityMax);
+					o.colour = ColourMap.SampleLevel(linear_clamp_sampler, float2(speedT, 0.5), 0).rgb;
+				}
 
 				return o;
 			}

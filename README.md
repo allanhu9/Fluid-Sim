@@ -56,8 +56,11 @@ collision handling. The new shader's first eight kernel indices are unchanged.
    Boundary mass is the same mass as the fluid; there is no separate mass setting.
 3. Assign the bounded simulation to the existing `ParticleDisplay2D` **Sim**
    reference. It renders the complete combined buffer with the existing particle
-   shader, scale, and velocity colour map. Stationary boundaries use the zero-speed
-   colour. Particle display scale remains a visual setting, not the sample spacing.
+   shader and scale. Set **Boundary Colour** on the display to choose a solid
+   colour for boundary particles (default white); fluid particles keep using the
+   velocity colour map. Boundary colours follow the sorted particle-type flags
+   and can be changed during play. Particle display scale remains a visual
+   setting, not the sample spacing.
 
 The bounded spawner reuses the original fluid-region spawning and appends a
 rectangular shell of stationary boundary samples, including corners without

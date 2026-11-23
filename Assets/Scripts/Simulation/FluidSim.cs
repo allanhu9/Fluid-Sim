@@ -19,11 +19,23 @@ namespace Seb.Fluid.Simulation
 
 		[Header("Simulation Settings")] public float gravity = -10;
 		public float smoothingRadius = 0.2f;
+		[Min(0.0001f)] public float particleMass = 1;
 		public float targetDensity = 630;
-		public float pressureMultiplier = 288;
 		public float nearPressureMultiplier = 2.15f;
 		public float viscosityStrength = 0;
-		[Range(0, 1)] public float collisionDamping = 0.95f;
+
+		[Header("Pressure Calculation (Tait Equation of State)")]
+		[Min(1)] public float stiffness = 7; // Tait exponent (gamma)
+		[Min(0)] public float speedOfSound = 20; // speed of sound in water, m/s
+
+		[Header("Boundary Particles")]
+		[Min(0.01f)] public float boundaryLayerThicknessFactor = 3; // boundary wall depth, in multiples of smoothingRadius
+		[Min(0)] public float boundaryRepulsionStrength = 1;
+		[Min(0)] public float boundaryRepulsionRadius; // 0 = use boundary particle spacing
+		public float boundaryRepulsionExponent1 = 12;
+		public float boundaryRepulsionExponent2 = 6;
+		[Range(0.001f, 1)] public float boundaryRepulsionMinDistanceFraction = 0.1f;
+		[Min(0.0001f)] public float boundaryRepulsionMaxForce = 1000;
 
 		[Header("Foam Settings")] public bool foamActive;
 		public int maxFoamParticleCount = 1000;
@@ -54,12 +66,17 @@ namespace Seb.Fluid.Simulation
 		public ComputeBuffer positionBuffer { get; private set; }
 		public ComputeBuffer velocityBuffer { get; private set; }
 		public ComputeBuffer densityBuffer { get; private set; }
+		public ComputeBuffer particleTypeBuffer { get; private set; }
 		public ComputeBuffer predictedPositionsBuffer;
 		public ComputeBuffer debugBuffer { get; private set; }
+
+		public int numFluidParticles { get; private set; }
+		public int numBoundaryParticles { get; private set; }
 
 		ComputeBuffer sortTarget_positionBuffer;
 		ComputeBuffer sortTarget_velocityBuffer;
 		ComputeBuffer sortTarget_predictedPositionsBuffer;
+		ComputeBuffer sortTarget_particleTypeBuffer;
 
 		// Kernel IDs
 		const int externalForcesKernel = 0;
@@ -73,6 +90,7 @@ namespace Seb.Fluid.Simulation
 		const int renderKernel = 8;
 		const int foamUpdateKernel = 9;
 		const int foamReorderCopyBackKernel = 10;
+		const int initializeParticleTypesKernel = 11;
 
 		SpatialHash spatialHash;
 
@@ -82,6 +100,7 @@ namespace Seb.Fluid.Simulation
 		float smoothRadiusOld;
 		float simTimer;
 		bool inSlowMode;
+		float activeBoundarySpacing;
 		Spawner3D.SpawnData spawnData;
 		Dictionary<ComputeBuffer, string> bufferNameLookup;
 
@@ -99,8 +118,14 @@ namespace Seb.Fluid.Simulation
 			// don't collide with other FluidSim instances sharing the same shader asset.
 			compute = Instantiate(compute);
 
-			spawnData = spawner.GetSpawnData();
+			Vector3 boundsCentre = transform.position;
+			Vector3 boundsSize = transform.localScale;
+			activeBoundarySpacing = (float)Math.Cbrt((double)particleMass / targetDensity);
+
+			spawnData = spawner.GetSpawnDataWithBoundary(smoothingRadius, particleMass, targetDensity, boundaryLayerThicknessFactor, boundsCentre, boundsSize);
 			int numParticles = spawnData.points.Length;
+			numBoundaryParticles = spawner.boundaryParticleCount;
+			numFluidParticles = numParticles - numBoundaryParticles;
 
 			spatialHash = new SpatialHash(numParticles);
 			
@@ -109,6 +134,7 @@ namespace Seb.Fluid.Simulation
 			predictedPositionsBuffer = CreateStructuredBuffer<float3>(numParticles);
 			velocityBuffer = CreateStructuredBuffer<float3>(numParticles);
 			densityBuffer = CreateStructuredBuffer<float2>(numParticles);
+			particleTypeBuffer = CreateStructuredBuffer<uint>(numParticles);
 			foamBuffer = CreateStructuredBuffer<FoamParticle>(maxFoamParticleCount);
 			foamSortTargetBuffer = CreateStructuredBuffer<FoamParticle>(maxFoamParticleCount);
 			foamCountBuffer = CreateStructuredBuffer<uint>(4096);
@@ -117,6 +143,7 @@ namespace Seb.Fluid.Simulation
 			sortTarget_positionBuffer = CreateStructuredBuffer<float3>(numParticles);
 			sortTarget_predictedPositionsBuffer = CreateStructuredBuffer<float3>(numParticles);
 			sortTarget_velocityBuffer = CreateStructuredBuffer<float3>(numParticles);
+			sortTarget_particleTypeBuffer = CreateStructuredBuffer<uint>(numParticles);
 
 			bufferNameLookup = new Dictionary<ComputeBuffer, string>
 			{
@@ -124,27 +151,27 @@ namespace Seb.Fluid.Simulation
 				{ predictedPositionsBuffer, "PredictedPositions" },
 				{ velocityBuffer, "Velocities" },
 				{ densityBuffer, "Densities" },
+				{ particleTypeBuffer, "ParticleTypes" },
 				{ spatialHash.SpatialKeys, "SpatialKeys" },
 				{ spatialHash.SpatialOffsets, "SpatialOffsets" },
 				{ spatialHash.SpatialIndices, "SortedIndices" },
 				{ sortTarget_positionBuffer, "SortTarget_Positions" },
 				{ sortTarget_predictedPositionsBuffer, "SortTarget_PredictedPositions" },
 				{ sortTarget_velocityBuffer, "SortTarget_Velocities" },
+				{ sortTarget_particleTypeBuffer, "SortTarget_ParticleTypes" },
 				{ foamCountBuffer, "WhiteParticleCounters" },
 				{ foamBuffer, "WhiteParticles" },
 				{ foamSortTargetBuffer, "WhiteParticlesCompacted" },
 				{ debugBuffer, "Debug" }
 			};
 
-			// Set buffer data
-			SetInitialBufferData(spawnData);
-
 			// External forces kernel
 			SetBuffers(compute, externalForcesKernel, bufferNameLookup, new ComputeBuffer[]
 			{
 				positionBuffer,
 				predictedPositionsBuffer,
-				velocityBuffer
+				velocityBuffer,
+				particleTypeBuffer
 			});
 
 			// Spatial hash kernel
@@ -165,6 +192,8 @@ namespace Seb.Fluid.Simulation
 				sortTarget_predictedPositionsBuffer,
 				velocityBuffer,
 				sortTarget_velocityBuffer,
+				particleTypeBuffer,
+				sortTarget_particleTypeBuffer,
 				spatialHash.SpatialIndices
 			});
 
@@ -177,6 +206,8 @@ namespace Seb.Fluid.Simulation
 				sortTarget_predictedPositionsBuffer,
 				velocityBuffer,
 				sortTarget_velocityBuffer,
+				particleTypeBuffer,
+				sortTarget_particleTypeBuffer,
 				spatialHash.SpatialIndices
 			});
 
@@ -185,6 +216,7 @@ namespace Seb.Fluid.Simulation
 			{
 				predictedPositionsBuffer,
 				densityBuffer,
+				particleTypeBuffer,
 				spatialHash.SpatialKeys,
 				spatialHash.SpatialOffsets
 			});
@@ -195,6 +227,7 @@ namespace Seb.Fluid.Simulation
 				predictedPositionsBuffer,
 				densityBuffer,
 				velocityBuffer,
+				particleTypeBuffer,
 				spatialHash.SpatialKeys,
 				spatialHash.SpatialOffsets,
 				foamBuffer,
@@ -208,6 +241,7 @@ namespace Seb.Fluid.Simulation
 				predictedPositionsBuffer,
 				densityBuffer,
 				velocityBuffer,
+				particleTypeBuffer,
 				spatialHash.SpatialKeys,
 				spatialHash.SpatialOffsets
 			});
@@ -216,7 +250,8 @@ namespace Seb.Fluid.Simulation
 			SetBuffers(compute, updatePositionsKernel, bufferNameLookup, new ComputeBuffer[]
 			{
 				positionBuffer,
-				velocityBuffer
+				velocityBuffer,
+				particleTypeBuffer
 			});
 
 			// Render to 3d tex kernel
@@ -224,6 +259,7 @@ namespace Seb.Fluid.Simulation
 			{
 				predictedPositionsBuffer,
 				densityBuffer,
+				particleTypeBuffer,
 				spatialHash.SpatialKeys,
 				spatialHash.SpatialOffsets,
 			});
@@ -236,6 +272,7 @@ namespace Seb.Fluid.Simulation
 				predictedPositionsBuffer,
 				densityBuffer,
 				velocityBuffer,
+				particleTypeBuffer,
 				spatialHash.SpatialKeys,
 				spatialHash.SpatialOffsets,
 				foamSortTargetBuffer,
@@ -251,8 +288,18 @@ namespace Seb.Fluid.Simulation
 				foamCountBuffer,
 			});
 
+			// Initialize particle types kernel (marks every sample as fluid; boundary flags are then
+			// uploaded directly from the spawn data in SetInitialBufferData)
+			SetBuffers(compute, initializeParticleTypesKernel, bufferNameLookup, new ComputeBuffer[]
+			{
+				particleTypeBuffer
+			});
+
 			compute.SetInt("numParticles", positionBuffer.count);
 			compute.SetInt("MaxWhiteParticleCount", maxFoamParticleCount);
+
+			// Set buffer data
+			SetInitialBufferData(spawnData);
 
 			UpdateSmoothingConstants();
 
@@ -362,6 +409,11 @@ namespace Seb.Fluid.Simulation
 				UpdateSmoothingConstants();
 			}
 
+			if (!(particleMass > 0) || float.IsInfinity(particleMass))
+			{
+				throw new ArgumentOutOfRangeException(nameof(particleMass), "Particle mass must be finite and greater than zero.");
+			}
+
 			Vector3 simBoundsSize = transform.localScale;
 			Vector3 simBoundsCentre = transform.position;
 
@@ -369,10 +421,11 @@ namespace Seb.Fluid.Simulation
 			compute.SetFloat("whiteParticleDeltaTime", frameDeltaTime);
 			compute.SetFloat("simTime", simTimer);
 			compute.SetFloat("gravity", gravity);
-			compute.SetFloat("collisionDamping", collisionDamping);
 			compute.SetFloat("smoothingRadius", smoothingRadius);
+			compute.SetFloat("particleMass", particleMass);
 			compute.SetFloat("targetDensity", targetDensity);
-			compute.SetFloat("pressureMultiplier", pressureMultiplier);
+			compute.SetFloat("taitStiffness", stiffness);
+			compute.SetFloat("taitB", targetDensity * speedOfSound * speedOfSound / stiffness);
 			compute.SetFloat("nearPressureMultiplier", nearPressureMultiplier);
 			compute.SetFloat("viscosityStrength", viscosityStrength);
 			compute.SetVector("boundsSize", simBoundsSize);
@@ -380,6 +433,8 @@ namespace Seb.Fluid.Simulation
 
 			compute.SetMatrix("localToWorld", transform.localToWorldMatrix);
 			compute.SetMatrix("worldToLocal", transform.worldToLocalMatrix);
+
+			UpdateBoundaryRepulsionSettings(simBoundsCentre);
 
 			// Foam settings
 			float fadeInT = (spawnRateFadeInTime <= 0) ? 1 : Mathf.Clamp01((simTimer - spawnRateFadeStartTime) / spawnRateFadeInTime);
@@ -392,11 +447,49 @@ namespace Seb.Fluid.Simulation
 			compute.SetFloat("bubbleScale", bubbleScale);
 		}
 
+		void UpdateBoundaryRepulsionSettings(Vector3 boundaryRepulsionCentre)
+		{
+			if (!IsFinite(boundaryRepulsionStrength) || boundaryRepulsionStrength < 0 ||
+				!IsFinite(boundaryRepulsionRadius) || boundaryRepulsionRadius < 0 ||
+				!IsFinite(boundaryRepulsionExponent1) || !IsFinite(boundaryRepulsionExponent2) ||
+				boundaryRepulsionExponent2 <= 0 || boundaryRepulsionExponent1 <= boundaryRepulsionExponent2 ||
+				!IsFinite(boundaryRepulsionMinDistanceFraction) || boundaryRepulsionMinDistanceFraction <= 0 || boundaryRepulsionMinDistanceFraction > 1 ||
+				!IsFinite(boundaryRepulsionMaxForce) || boundaryRepulsionMaxForce <= 0)
+			{
+				throw new ArgumentException("Boundary repulsion requires finite strength >= 0, radius >= 0 (0 uses boundary particle spacing), p1 > p2 > 0, minimum-distance fraction in (0, 1], and maximum force > 0.");
+			}
+
+			float repulsionRadius = boundaryRepulsionRadius > 0 ? boundaryRepulsionRadius : activeBoundarySpacing;
+			if (boundaryRepulsionStrength > 0 && repulsionRadius > smoothingRadius)
+			{
+				throw new ArgumentOutOfRangeException(nameof(boundaryRepulsionRadius),
+					"Effective boundary repulsion radius (including automatic boundary spacing) must not exceed the smoothing radius while repulsion is enabled.");
+			}
+
+			compute.SetFloat("boundaryRepulsionStrength", boundaryRepulsionStrength);
+			compute.SetFloat("boundaryRepulsionRadius", repulsionRadius);
+			compute.SetFloat("boundaryRepulsionExponent1", boundaryRepulsionExponent1);
+			compute.SetFloat("boundaryRepulsionExponent2", boundaryRepulsionExponent2);
+			compute.SetFloat("boundaryRepulsionMinDistanceFraction", boundaryRepulsionMinDistanceFraction);
+			compute.SetFloat("boundaryRepulsionMaxForce", boundaryRepulsionMaxForce);
+			compute.SetVector("boundaryRepulsionCentre", boundaryRepulsionCentre);
+		}
+
+		static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+
 		void SetInitialBufferData(Spawner3D.SpawnData spawnData)
 		{
 			positionBuffer.SetData(spawnData.points);
 			predictedPositionsBuffer.SetData(spawnData.points);
 			velocityBuffer.SetData(spawnData.velocities);
+			if (spawnData.particleTypes != null)
+			{
+				particleTypeBuffer.SetData(spawnData.particleTypes);
+			}
+			else
+			{
+				Dispatch(compute, positionBuffer.count, kernelIndex: initializeParticleTypesKernel);
+			}
 
 			foamBuffer.SetData(new FoamParticle[foamBuffer.count]);
 

@@ -202,6 +202,7 @@ MonoBehaviour:
     m_ColorSpace: -1
     m_NumColorKeys: 4
     m_NumAlphaKeys: 2
+  boundaryColour: {r: 0.91813564, g: 0, b: 1, a: 1}
   gradientResolution: 64
   velocityDisplayMax: 6.5
 --- !u!114 &271053324
@@ -224,8 +225,8 @@ MonoBehaviour:
   particleMass: 1
   targetDensity: 55
   pressureMultiplier: 250
-  nearPressureMultiplier: 2
-  viscosityStrength: 0
+  nearPressureMultiplier: 1
+  viscosityStrength: 0.03
   interactionRadius: 2
   interactionStrength: 90
   compute: {fileID: 7200000, guid: 8ae184c3dd0d4ebeb48dc75a5fa06679, type: 3}
@@ -252,11 +253,11 @@ MonoBehaviour:
   initialVelocity: {x: 0, y: 0}
   jitterStr: 0.03
   spawnRegions:
-  - position: {x: 0, y: -0.45}
-    size: {x: 14.61, y: 7.24}
+  - position: {x: -2, y: -0.45}
+    size: {x: 6.68, y: 6.02}
     debugCol: {r: 1, g: 0.2783019, b: 0.2783019, a: 1}
   showSpawnBoundsGizmos: 1
-  spawnParticleCount: 5886
+  spawnParticleCount: 2250
   boundsCentre: {x: 0, y: 0}
   boundsSize: {x: 17.1, y: 9.3}
   showBoundaryGizmos: 1
@@ -326,6 +327,7 @@ MonoBehaviour:
     m_ColorSpace: -1
     m_NumColorKeys: 4
     m_NumAlphaKeys: 2
+  boundaryColour: {r: 1, g: 1, b: 1, a: 1}
   gradientResolution: 64
   velocityDisplayMax: 6.5
 --- !u!114 &296732956
@@ -340,15 +342,15 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 895837b52d5fc53409ded3589d4da696, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  spawnDensity: 159
+  spawnDensity: 55
   initialVelocity: {x: 0, y: 0}
   jitterStr: 0.03
   spawnRegions:
-  - position: {x: 18, y: 0.66}
-    size: {x: 6.42, y: 4.39}
+  - position: {x: 18, y: -0.45}
+    size: {x: 8, y: 7}
     debugCol: {r: 1, g: 0.2783019, b: 0.2783019, a: 1}
   showSpawnBoundsGizmos: 1
-  spawnParticleCount: 4536
+  spawnParticleCount: 3120
 --- !u!114 &296732957
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -376,7 +378,7 @@ MonoBehaviour:
   compute: {fileID: 7200000, guid: 26c673f9bab7b924a8ccd8629d2587c8, type: 3}
   collisionDamping: 0.95
   boundsSize: {x: 17.1, y: 9.3}
-  boundsCentre: {x: 18, y: 0}
+  boundsCentre: {x: 20, y: 0}
   obstacleSize: {x: 0, y: 0}
   obstacleCentre: {x: 0, y: 0}
   spawner2D: {fileID: 296732956}
@@ -456,7 +458,7 @@ Camera:
   far clip plane: 1000
   field of view: 60
   orthographic: 1
-  orthographic size: 10
+  orthographic size: 12
   m_Depth: -1
   m_CullingMask:
     serializedVersion: 2

@@ -14,6 +14,7 @@ Shader "Fluid/ParticleDepth" {
 			#include "UnityCG.cginc"
 			
 			StructuredBuffer<float3> Positions;
+			StructuredBuffer<uint> ParticleTypes; // 0 = fluid, 1 = boundary
 			float scale;
 
 			struct v2f
@@ -33,6 +34,8 @@ Shader "Fluid/ParticleDepth" {
 				float3 camRight = unity_CameraToWorld._m00_m10_m20;
 				float3 vertPosWorld = worldCentre + camRight * vertOffset.x + camUp * vertOffset.y;
 				o.pos = mul(UNITY_MATRIX_VP, float4(vertPosWorld, 1));
+				// Collapse boundary instances to a degenerate point so they are culled
+				if (ParticleTypes[instanceID] != 0) o.pos = float4(0, 0, 0, 0);
 				o.posWorld = vertPosWorld;
 				o.uv = v.texcoord;
 

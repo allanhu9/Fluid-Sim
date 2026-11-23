@@ -32,6 +32,7 @@ Shader "Fluid/Particle3DSurf"
         #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
 			StructuredBuffer<float3> Positions;
 			StructuredBuffer<float3> Velocities;
+			StructuredBuffer<uint> ParticleTypes; // 0 = fluid, 1 = boundary (drawn separately)
         #endif
 
 
@@ -59,14 +60,16 @@ Shader "Fluid/Particle3DSurf"
         {
             #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
 				float3 pos = Positions[unity_InstanceID];
+				// Boundary instances get zero scale (degenerate triangles are culled)
+				float s = ParticleTypes[unity_InstanceID] == 0 ? scale : 0;
 
-				unity_ObjectToWorld._11_21_31_41 = float4(scale, 0, 0, 0);
-				unity_ObjectToWorld._12_22_32_42 = float4(0, scale, 0, 0);
-				unity_ObjectToWorld._13_23_33_43 = float4(0, 0, scale, 0);
+				unity_ObjectToWorld._11_21_31_41 = float4(s, 0, 0, 0);
+				unity_ObjectToWorld._12_22_32_42 = float4(0, s, 0, 0);
+				unity_ObjectToWorld._13_23_33_43 = float4(0, 0, s, 0);
 				unity_ObjectToWorld._14_24_34_44 = float4(pos, 1);
 				unity_WorldToObject = unity_ObjectToWorld;
 				unity_WorldToObject._14_24_34 *= -1;
-				unity_WorldToObject._11_22_33 = 1.0f / unity_WorldToObject._11_22_33;
+				unity_WorldToObject._11_22_33 = 1.0f / max(unity_WorldToObject._11_22_33, 1e-6);
 
             #endif
         }

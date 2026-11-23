@@ -9,6 +9,7 @@
 #pragma kernel UpdateDensityTexture
 #pragma kernel UpdateWhiteParticles
 #pragma kernel WhiteParticlePrepareNextFrame;
+#pragma kernel InitializeParticleTypes
 
 // Includes
 #include "./FluidMaths3D.hlsl"
@@ -22,6 +23,7 @@ RWStructuredBuffer<float3> Positions;
 RWStructuredBuffer<float3> PredictedPositions;
 RWStructuredBuffer<float3> Velocities;
 RWStructuredBuffer<float2> Densities; // Density, Near Density
+RWStructuredBuffer<uint> ParticleTypes; // 0 = fluid, 1 = fixed boundary; reordered with positions
 
 // Spatial hashing
 RWStructuredBuffer<uint> SpatialKeys;
@@ -31,14 +33,15 @@ StructuredBuffer<uint> SortedIndices;
 RWStructuredBuffer<float3> Debug;
 
 // Settings
-const uint numParticles;
+const uint numParticles; // Total fluid and boundary samples
 const float gravity;
 const float deltaTime;
 const float simTime;
-const float collisionDamping;
 const float smoothingRadius;
+const float particleMass;
 const float targetDensity;
-const float pressureMultiplier;
+const float taitStiffness; // Tait exponent (gamma)
+const float taitB; // Tait pressure constant: targetDensity * speedOfSound^2 / stiffness
 const float nearPressureMultiplier;
 const float viscosityStrength;
 const float edgeForce;
@@ -51,6 +54,47 @@ const float4x4 worldToLocal;
 const float2 interactionInputPoint;
 const float interactionInputStrength;
 const float interactionInputRadius;
+
+const float boundaryRepulsionStrength;
+const float boundaryRepulsionRadius;
+const float boundaryRepulsionExponent1;
+const float boundaryRepulsionExponent2;
+const float boundaryRepulsionMinDistanceFraction;
+const float boundaryRepulsionMaxForce;
+const float3 boundaryRepulsionCentre;
+
+float3 BoundaryRepulsion(float3 fluidPos, float3 boundaryPos, float dst)
+{
+	if (boundaryRepulsionStrength <= 0 || dst >= boundaryRepulsionRadius) return 0;
+
+	float3 away = fluidPos - boundaryPos;
+	if (dst > 0)
+	{
+		away /= dst;
+	}
+	else
+	{
+		float3 inward = boundaryRepulsionCentre - boundaryPos;
+		float inwardLength = length(inward);
+		away = inwardLength > 0 ? inward / inwardLength : float3(0, 1, 0);
+	}
+
+	float r = max(dst, boundaryRepulsionRadius * boundaryRepulsionMinDistanceFraction);
+	float logRatio = log(boundaryRepulsionRadius / r);
+	float difference = 1 - exp(-(boundaryRepulsionExponent1 - boundaryRepulsionExponent2) * logRatio);
+	if (difference <= 0) return 0;
+
+	// Evaluate the capped magnitude in log space so powers cannot overflow before clamping.
+	float logMagnitude = log(boundaryRepulsionStrength) - log(r)
+		+ boundaryRepulsionExponent1 * logRatio + log(difference);
+	float magnitude = exp(min(logMagnitude, log(boundaryRepulsionMaxForce)));
+	return away * magnitude;
+}
+
+bool IsBoundary(uint particleIndex)
+{
+	return ParticleTypes[particleIndex] == 1;
+}
 
 // Volume texture settings
 RWTexture3D<float> DensityMap;
@@ -82,9 +126,10 @@ const int sprayClassifyMaxNeighbours;
 const float bubbleScale;
 const float bubbleScaleChangeSpeed;
 
+// Tait equation of state: p = B * ((rho / rho0)^gamma - 1), clamped at 0 to avoid tensile instability at the free surface
 float PressureFromDensity(float density)
 {
-    return max(0, (density - targetDensity)) * pressureMultiplier;
+    return max(0, taitB * (pow(max(density, 0) / targetDensity, taitStiffness) - 1));
 }
 
 float NearPressureFromDensity(float nearDensity)
@@ -136,6 +181,13 @@ void ExternalForces(uint3 id : SV_DispatchThreadID)
     if (id.x >= numParticles)
         return;
 
+    if (IsBoundary(id.x))
+    {
+        Velocities[id.x] = 0;
+        PredictedPositions[id.x] = Positions[id.x];
+        return;
+    }
+
     // External forces (gravity)
     Velocities[id.x] += float3(0, gravity, 0) * deltaTime;
 
@@ -161,6 +213,7 @@ void UpdateSpatialHash(uint3 id : SV_DispatchThreadID)
 RWStructuredBuffer<float3> SortTarget_Positions;
 RWStructuredBuffer<float3> SortTarget_PredictedPositions;
 RWStructuredBuffer<float3> SortTarget_Velocities;
+RWStructuredBuffer<uint> SortTarget_ParticleTypes;
 
 [numthreads(ThreadGroupSize, 1, 1)]
 void Reorder(uint3 id : SV_DispatchThreadID)
@@ -171,6 +224,7 @@ void Reorder(uint3 id : SV_DispatchThreadID)
     SortTarget_Positions[id.x] = Positions[sortedIndex];
     SortTarget_PredictedPositions[id.x] = PredictedPositions[sortedIndex];
     SortTarget_Velocities[id.x] = Velocities[sortedIndex];
+    SortTarget_ParticleTypes[id.x] = ParticleTypes[sortedIndex];
 }
 
 [numthreads(ThreadGroupSize, 1, 1)]
@@ -182,9 +236,10 @@ void ReorderCopyBack(uint3 id : SV_DispatchThreadID)
     Positions[id.x] = SortTarget_Positions[id.x];
     PredictedPositions[id.x] = SortTarget_PredictedPositions[id.x];
     Velocities[id.x] = SortTarget_Velocities[id.x];
+    ParticleTypes[id.x] = SortTarget_ParticleTypes[id.x];
 }
 
-float2 CalculateDensitiesAtPoint(float3 pos)
+float2 CalculateDensitiesAtPoint(float3 pos, bool includeBoundary)
 {
     int3 originCell = GetCell3D(pos, smoothingRadius);
     float sqrRadius = smoothingRadius * smoothingRadius;
@@ -194,7 +249,8 @@ float2 CalculateDensitiesAtPoint(float3 pos)
     // Neighbour search
     for (int i = 0; i < 27; i++)
     {
-        uint hash = HashCell3D(originCell + offsets3D[i]);
+        int3 neighbourCell = originCell + offsets3D[i];
+        uint hash = HashCell3D(neighbourCell);
         uint key = KeyFromHash(hash, numParticles);
         uint currIndex = SpatialOffsets[key];
 
@@ -208,7 +264,11 @@ float2 CalculateDensitiesAtPoint(float3 pos)
             if (neighbourKey != key)
                 break;
 
+            if (!includeBoundary && IsBoundary(neighbourIndex)) continue;
+
             float3 neighbourPos = PredictedPositions[neighbourIndex];
+            // Different cells can share a hash key; visit each sample only in its actual cell.
+            if (any(GetCell3D(neighbourPos, smoothingRadius) != neighbourCell)) continue;
             float3 offsetToNeighbour = neighbourPos - pos;
             float sqrDstToNeighbour = dot(offsetToNeighbour, offsetToNeighbour);
 
@@ -218,8 +278,8 @@ float2 CalculateDensitiesAtPoint(float3 pos)
 
             // Calculate density and near density
             float dst = sqrt(sqrDstToNeighbour);
-            density += DensityKernel(dst, smoothingRadius);
-            nearDensity += NearDensityKernel(dst, smoothingRadius);
+            density += particleMass * DensityKernel(dst, smoothingRadius);
+            nearDensity += particleMass * NearDensityKernel(dst, smoothingRadius);
         }
     }
 
@@ -232,8 +292,15 @@ void CalculateDensities(uint3 id : SV_DispatchThreadID)
     if (id.x >= numParticles)
         return;
 
+    if (IsBoundary(id.x))
+    {
+        // No boundary near-pressure term is evaluated, so near density is unused.
+        Densities[id.x] = float2(targetDensity, 0);
+        return;
+    }
+
     float3 pos = PredictedPositions[id.x];
-    float2 densities = CalculateDensitiesAtPoint(pos);
+    float2 densities = CalculateDensitiesAtPoint(pos, true);
 
     Densities[id.x] = densities;
 }
@@ -269,6 +336,10 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles)
         return;
+    // Must happen before the boundary early-out: after sorting, index 0 is often a boundary sample.
+    if (id.x == 0) WhiteParticleCounters[1] = 0; // Reset survivor counter
+    if (IsBoundary(id.x))
+        return;
 
     // Calculate pressure
     float density = Densities[id.x][0];
@@ -290,7 +361,8 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
     // Neighbour search
     for (int i = 0; i < 27; i++)
     {
-        uint hash = HashCell3D(originCell + offsets3D[i]);
+        int3 neighbourCell = originCell + offsets3D[i];
+        uint hash = HashCell3D(neighbourCell);
         uint key = KeyFromHash(hash, numParticles);
         uint currIndex = SpatialOffsets[key];
 
@@ -299,51 +371,65 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
             uint neighbourIndex = currIndex;
             currIndex++;
 
-            // Skip if looking at self
-            if (neighbourIndex == id.x) continue;
-
             uint neighbourKey = SpatialKeys[neighbourIndex];
             // Exit if no longer looking at correct bin
             if (neighbourKey != key) break;
 
+            // Skip if looking at self
+            if (neighbourIndex == id.x) continue;
+
             float3 neighbourPos = PredictedPositions[neighbourIndex];
+            // Different cells can share a hash key; visit each sample only in its actual cell.
+            if (any(GetCell3D(neighbourPos, smoothingRadius) != neighbourCell)) continue;
             float3 offsetToNeighbour = neighbourPos - pos;
             float sqrDstToNeighbour = dot(offsetToNeighbour, offsetToNeighbour);
+
+            bool boundaryNeighbour = IsBoundary(neighbourIndex);
+            if (boundaryNeighbour)
+            {
+                pressureForce += BoundaryRepulsion(pos, neighbourPos, sqrt(sqrDstToNeighbour));
+            }
 
             // Skip if not within radius
             if (sqrDstToNeighbour > sqrRadius) continue;
 
             // Calculate pressure force
             float densityNeighbour = Densities[neighbourIndex][0];
-            float nearDensityNeighbour = Densities[neighbourIndex][1];
-            float neighbourPressure = PressureFromDensity(densityNeighbour);
-            float neighbourPressureNear = NearPressureFromDensity(nearDensityNeighbour);
+            // Mirror this fluid particle's pressure only for this pair, without storing it.
+            float neighbourPressure = boundaryNeighbour ? pressure : PressureFromDensity(densityNeighbour);
 
-            float sharedPressure = (pressure + neighbourPressure) / 2;
-            float sharedNearPressure = (nearPressure + neighbourPressureNear) / 2;
+            // Eq 84. from SPH Tutorial
+            float sharedPressure = (pressure / (density * density) + neighbourPressure / (densityNeighbour * densityNeighbour));
 
             float dstToNeighbour = sqrt(sqrDstToNeighbour);
             float3 dirToNeighbour = dstToNeighbour > 0 ? offsetToNeighbour / dstToNeighbour : float3(0, 1, 0);
             neighbourCount++;
 
             // Update pressure force
-            pressureForce += dirToNeighbour * DensityDerivative(dstToNeighbour, smoothingRadius) * sharedPressure / densityNeighbour;
-            pressureForce += dirToNeighbour * NearDensityDerivative(dstToNeighbour, smoothingRadius) * sharedNearPressure / nearDensityNeighbour;
+            pressureForce += particleMass * particleMass * sharedPressure * dirToNeighbour * DensityDerivative(dstToNeighbour, smoothingRadius);
 
-            // ---- White Particle 'Trapped Air' Calculation ----
-            float3 relativeVelocity = velocity - Velocities[neighbourIndex];
-            float relativeVelocityMagnitude = length(relativeVelocity);
-            float3 relativeVelocityDir = relativeVelocity / max(0.000001, relativeVelocityMagnitude);
-            // 0 if moving in opposite directions; up to 2 if moving directly toward one another
-            float convergeWeight = 1 - dot(relativeVelocityDir, -dirToNeighbour);
-            // 1 when distance between particles is 0, down to 0 when distance reaches the smoothing radius
-            float influence = 1 - min(1, dstToNeighbour / smoothingRadius);
-            // Sum up weighted velocity diff between current particle and each of its surrounding neighbours
-            weightedVelocityDifference += relativeVelocityMagnitude * convergeWeight * influence;
+            if (!boundaryNeighbour)
+            {
+                float nearDensityNeighbour = Densities[neighbourIndex][1];
+                float neighbourPressureNear = NearPressureFromDensity(nearDensityNeighbour);
+                float sharedNearPressure = (nearPressure / (densityNear * densityNear) + neighbourPressureNear / (nearDensityNeighbour * nearDensityNeighbour));
+                pressureForce += particleMass * particleMass * sharedNearPressure * dirToNeighbour * NearDensityDerivative(dstToNeighbour, smoothingRadius);
+
+                // ---- White Particle 'Trapped Air' Calculation ----
+                float3 relativeVelocity = velocity - Velocities[neighbourIndex];
+                float relativeVelocityMagnitude = length(relativeVelocity);
+                float3 relativeVelocityDir = relativeVelocity / max(0.000001, relativeVelocityMagnitude);
+                // 0 if moving in opposite directions; up to 2 if moving directly toward one another
+                float convergeWeight = 1 - dot(relativeVelocityDir, -dirToNeighbour);
+                // 1 when distance between particles is 0, down to 0 when distance reaches the smoothing radius
+                float influence = 1 - min(1, dstToNeighbour / smoothingRadius);
+                // Sum up weighted velocity diff between current particle and each of its surrounding neighbours
+                weightedVelocityDifference += relativeVelocityMagnitude * convergeWeight * influence;
+            }
         }
     }
 
-    float3 acceleration = pressureForce / density;
+    float3 acceleration = pressureForce / particleMass;
     float3 velocityNew = velocity + acceleration * deltaTime;
     Velocities[id.x] = velocityNew;
 
@@ -356,7 +442,6 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
 
     // ---- Handle spawning of white particles from the current fluid particle ----
     uint rngState = dot(asuint(float4(pos, simTime)), uint4(19349669, 83492837, 73856131, 4785773));
-    if (id.x == 0) WhiteParticleCounters[1] = 0; // Reset survivor counter
 
     float trappedAirFactor = trappedAirParams[0] * Remap01(weightedVelocityDifference, trappedAirParams[1], trappedAirParams[2]);
     float kineticEnergyFactor = Remap01(dot(velocity, velocity), kineticEnergyParams[0], kineticEnergyParams[1]);
@@ -411,6 +496,8 @@ void CalculateViscosity(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles)
         return;
+    if (IsBoundary(id.x))
+        return;
 
     float3 pos = PredictedPositions[id.x];
     int3 originCell = GetCell3D(pos, smoothingRadius);
@@ -422,7 +509,8 @@ void CalculateViscosity(uint3 id : SV_DispatchThreadID)
     // Neighbour search
     for (int i = 0; i < 27; i++)
     {
-        uint hash = HashCell3D(originCell + offsets3D[i]);
+        int3 neighbourCell = originCell + offsets3D[i];
+        uint hash = HashCell3D(neighbourCell);
         uint key = KeyFromHash(hash, numParticles);
         uint currIndex = SpatialOffsets[key];
 
@@ -437,11 +525,13 @@ void CalculateViscosity(uint3 id : SV_DispatchThreadID)
                 break;
 
 
-            // Skip if looking at self
-            if (neighbourIndex == id.x)
+            // Skip if looking at self or at a fixed boundary sample
+            if (neighbourIndex == id.x || IsBoundary(neighbourIndex))
                 continue;
 
             float3 neighbourPos = PredictedPositions[neighbourIndex];
+            // Different cells can share a hash key; visit each sample only in its actual cell.
+            if (any(GetCell3D(neighbourPos, smoothingRadius) != neighbourCell)) continue;
             float3 offsetToNeighbour = neighbourPos - pos;
             float sqrDstToNeighbour = dot(offsetToNeighbour, offsetToNeighbour);
 
@@ -463,12 +553,12 @@ void UpdatePositions(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles)
         return;
+    if (IsBoundary(id.x))
+        return;
 
     float3 vel = Velocities[id.x];
     float3 pos = Positions[id.x];
     pos += vel * deltaTime;
-
-    ResolveCollisions(pos, vel, collisionDamping);
 
     // Write results
     Positions[id.x] = pos;
@@ -484,7 +574,7 @@ void UpdateDensityTexture(uint3 id : SV_DispatchThreadID)
     // Convert threadID to a world-space position, and sample the fluid density at that point
     float3 texturePos = id / (densityMapSize - 1.0);
     float3 worldPos = (texturePos - 0.5) * boundsSize;
-    DensityMap[id] = CalculateDensitiesAtPoint(worldPos)[0];
+    DensityMap[id] = CalculateDensitiesAtPoint(worldPos, false)[0];
 }
 
 [numthreads(ThreadGroupSize, 1, 1)]
@@ -519,6 +609,10 @@ void UpdateWhiteParticles(uint3 id : SV_DispatchThreadID)
             // Exit if no longer looking at correct bin
             if (neighbourKey != key)
                 break;
+
+            // Fixed boundary samples have no meaningful velocity to contribute here.
+            if (IsBoundary(neighbourIndex))
+                continue;
 
             float3 neighbourPos = PredictedPositions[neighbourIndex];
             float3 offsetToNeighbour = neighbourPos - particle.position;
@@ -604,4 +698,12 @@ void WhiteParticlePrepareNextFrame(uint3 id : SV_DispatchThreadID)
     {
         WhiteParticleCounters[0] = WhiteParticleCounters[1];
     }
+}
+
+[numthreads(ThreadGroupSize, 1, 1)]
+void InitializeParticleTypes(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+
+    ParticleTypes[id.x] = 0;
 }

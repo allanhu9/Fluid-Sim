@@ -21,9 +21,14 @@ namespace Seb.Fluid.Rendering
 		public float velocityDisplayMax;
 		public int meshResolution;
 
+		[Header("Boundary Particle Settings")] public bool showBoundaryParticles = true;
+		public float boundaryScale = 1;
+		[ColorUsage(false)] public Color boundaryColour = Color.magenta;
+
 		[Header("References")] public FluidSim sim;
 		public Shader shaderShaded;
 		public Shader shaderBillboard;
+		public Shader shaderBoundaryBillboard;
 
 		Mesh mesh;
 		Material mat;
@@ -31,6 +36,10 @@ namespace Seb.Fluid.Rendering
 		Texture2D gradientTexture;
 		DisplayMode modeOld;
 		bool needsUpdate;
+
+		Mesh boundaryMesh;
+		Material boundaryMat;
+		ComputeBuffer boundaryArgsBuffer;
 
 		void LateUpdate()
 		{
@@ -40,6 +49,14 @@ namespace Seb.Fluid.Rendering
 			{
 				Bounds bounds = new Bounds(Vector3.zero, Vector3.one * 10000);
 				Graphics.DrawMeshInstancedIndirect(mesh, 0, mat, bounds, argsBuffer);
+			}
+
+			// Boundary/wall particles are always rendered as flat-coloured billboards,
+			// independently of whichever display mode the fluid itself is using.
+			if (showBoundaryParticles && boundaryMat != null && sim.numBoundaryParticles > 0)
+			{
+				Bounds bounds = new Bounds(Vector3.zero, Vector3.one * 10000);
+				Graphics.DrawMeshInstancedIndirect(boundaryMesh, 0, boundaryMat, bounds, boundaryArgsBuffer);
 			}
 		}
 
@@ -64,6 +81,7 @@ namespace Seb.Fluid.Rendering
 
 					mat.SetBuffer("Positions", sim.positionBuffer);
 					mat.SetBuffer("Velocities", sim.velocityBuffer);
+					mat.SetBuffer("ParticleTypes", sim.particleTypeBuffer);
 					mat.SetBuffer("DebugBuffer", sim.debugBuffer);
 				}
 			}
@@ -87,6 +105,25 @@ namespace Seb.Fluid.Rendering
 
 				mat.SetMatrix("localToWorld", localToWorld);
 			}
+
+			UpdateBoundarySettings();
+		}
+
+		void UpdateBoundarySettings()
+		{
+			if (!showBoundaryParticles || sim.numBoundaryParticles <= 0) return;
+
+			if (boundaryMat == null)
+			{
+				boundaryMesh = QuadGenerator.GenerateQuadMesh();
+				boundaryMat = new Material(shaderBoundaryBillboard);
+				boundaryMat.SetBuffer("Positions", sim.positionBuffer);
+				boundaryMat.SetBuffer("ParticleTypes", sim.particleTypeBuffer);
+				ComputeHelper.CreateArgsBuffer(ref boundaryArgsBuffer, boundaryMesh, sim.positionBuffer.count);
+			}
+
+			boundaryMat.SetFloat("scale", boundaryScale * 0.01f);
+			boundaryMat.SetColor("boundaryColour", boundaryColour);
 		}
 
 		public static void TextureFromGradient(ref Texture2D texture, int width, Gradient gradient, FilterMode filterMode = FilterMode.Bilinear)
@@ -131,6 +168,7 @@ namespace Seb.Fluid.Rendering
 		void OnDestroy()
 		{
 			ComputeHelper.Release(argsBuffer);
+			ComputeHelper.Release(boundaryArgsBuffer);
 		}
 	}
 }

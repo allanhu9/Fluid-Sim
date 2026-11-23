@@ -38,7 +38,6 @@ RenderSettings:
   m_ReflectionIntensity: 1
   m_CustomReflection: {fileID: 0}
   m_Sun: {fileID: 0}
-  m_IndirectSpecularColor: {r: 0.17964701, g: 0.2196726, b: 0.27606177, a: 1}
   m_UseRadianceAmbientProbe: 0
 --- !u!157 &3
 LightmapSettings:
@@ -352,11 +351,19 @@ MonoBehaviour:
   iterationsPerFrame: 3
   gravity: -10
   smoothingRadius: 0.2
+  particleMass: 1
   targetDensity: 630
-  pressureMultiplier: 288
   nearPressureMultiplier: 2.16
   viscosityStrength: 0
-  collisionDamping: 0.95
+  stiffness: 7
+  speedOfSound: 1480
+  boundaryLayerThicknessFactor: 3
+  boundaryRepulsionStrength: 1
+  boundaryRepulsionRadius: 0
+  boundaryRepulsionExponent1: 12
+  boundaryRepulsionExponent2: 6
+  boundaryRepulsionMinDistanceFraction: 0.1
+  boundaryRepulsionMaxForce: 1000
   foamActive: 1
   maxFoamParticleCount: 1024000
   trappedAirSpawnRate: 120
@@ -408,6 +415,8 @@ MonoBehaviour:
   - centre: {x: 10.98, y: -1.17, z: 0}
     size: 7
     debugDisplayCol: {r: 0.015686274, g: 0.531419, b: 1, a: 1}
+  showBoundaryGizmos: 1
+  boundaryParticleCount: 0
   debug_num_particles: 410758
   debug_spawn_volume: 686
 --- !u!1 &744472879
@@ -519,7 +528,6 @@ MonoBehaviour:
   scale: 2
   debugParam: 50000
   autoDraw: 0
-  testParams: {x: 1, y: 3, z: 0.8}
   shaderBillboard: {fileID: 4800000, guid: 4a0c3a32a60599c4198fe00e79a88932, type: 3}
   copyCountToArgsCompute: {fileID: 7200000, guid: 315c9eb00260d8743b3ffa9803eadaf3, type: 3}
 --- !u!1 &963194225

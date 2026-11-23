@@ -18,6 +18,7 @@ Shader "Fluid/ParticleBillboard" {
 			
 			StructuredBuffer<float3> Positions;
 			StructuredBuffer<float3> Velocities;
+			StructuredBuffer<uint> ParticleTypes; // 0 = fluid, 1 = boundary (drawn separately)
 			Texture2D<float4> ColourMap;
 			SamplerState linear_clamp_sampler;
 			float velocityMax;
@@ -45,6 +46,8 @@ Shader "Fluid/ParticleBillboard" {
 				float3 objectVertPos = v.vertex * scale * 2;
 				float4 viewPos = mul(UNITY_MATRIX_V, float4(centreWorld, 1)) + float4(objectVertPos, 0);
 				o.pos = mul(UNITY_MATRIX_P, viewPos);
+				// Collapse boundary instances to a degenerate point so they are culled
+				if (ParticleTypes[instanceID] != 0) o.pos = float4(0, 0, 0, 0);
 
 
 				float speed = length(Velocities[instanceID]);

@@ -251,10 +251,12 @@ namespace Seb.Fluid.Rendering
 			
 			// ---- Thickess ----
 			matThickness.SetBuffer("Positions", sim.positionBuffer);
+			matThickness.SetBuffer("ParticleTypes", sim.particleTypeBuffer);
 			matThickness.SetFloat("scale", thicknessParticleScale);
 			
 			// ---- Depth ----
 			matDepth.SetBuffer("Positions", sim.positionBuffer);
+			matDepth.SetBuffer("ParticleTypes", sim.particleTypeBuffer);
 			matDepth.SetFloat("scale", depthParticleSize);
 
 			// ---- Normals ----
