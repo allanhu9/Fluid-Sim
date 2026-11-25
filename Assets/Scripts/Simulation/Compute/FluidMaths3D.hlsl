@@ -14,6 +14,7 @@ float LinearKernel(float dst, float radius)
     return 0;
 }
 
+// Muller et al, 2003 poly6 smoothing kernel, used for everything but pressure and viscosity
 float SmoothingKernelPoly6(float dst, float radius)
 {
 	if (dst < radius)
@@ -23,6 +24,31 @@ float SmoothingKernelPoly6(float dst, float radius)
 		return v * v * v * scale;
 	}
 	return 0;
+}
+
+// Muller et al, 2003 Viscosity kernel (States that it greatly increased stability of simulation - may consider other options.)
+float ViscosityKernel(float dst, float radius)
+{
+    if (dst < radius)
+    {
+        float h = abs(radius);
+        float h2 = h * h;
+        float h3 = h2 * h;
+        float r = dst;
+        float r2 = r * r;
+        float r3 = r2 * r;
+        float scale = 15 / (2 * PI * h3);
+        float v = -r3/(2*h3) + r2/h2 + h/(2*r) - 1;
+        return v * scale;
+    }
+    return 0;
+}
+
+// Muller et al, 2003 Laplacian of viscosity kernel
+float LaplacianViscosityKernel(float dst, float radius)
+{
+    float scale = 45/(PI * pow(abs(radius), 6));
+    return scale * (radius - dst);
 }
 
 float SpikyKernelPow3(float dst, float radius)

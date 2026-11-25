@@ -282,9 +282,10 @@ MonoBehaviour:
   smoothingRadius: 0.2
   particleMass: 1
   targetDensity: 630
-  pressureMultiplier: 288
   nearPressureMultiplier: 2.16
   viscosityStrength: 0
+  stiffness: 7
+  speedOfSound: 20
   boundaryLayerThicknessFactor: 3
   boundaryRepulsionStrength: 1
   boundaryRepulsionRadius: 0

@@ -129,7 +129,7 @@ const float bubbleScaleChangeSpeed;
 // Tait equation of state: p = B * ((rho / rho0)^gamma - 1), clamped at 0 to avoid tensile instability at the free surface
 float PressureFromDensity(float density)
 {
-    return max(0, taitB * (pow(max(density, 0) / targetDensity, taitStiffness) - 1));
+    return max(0, taitB * (pow(abs(max(density, 0) / targetDensity), taitStiffness) - 1));
 }
 
 float NearPressureFromDensity(float nearDensity)
@@ -346,7 +346,7 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
     float densityNear = Densities[id.x][1];
     float pressure = PressureFromDensity(density);
     float nearPressure = NearPressureFromDensity(densityNear);
-    float3 pressureForce = 0;
+    float3 acceleration = 0; // a = F / m. All formulas below accumulate acceleration directly rather than force to avoid wasting compute by multipling and dividing particleMass
     float3 velocity = Velocities[id.x];
 
     float3 pos = PredictedPositions[id.x];
@@ -387,7 +387,8 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
             bool boundaryNeighbour = IsBoundary(neighbourIndex);
             if (boundaryNeighbour)
             {
-                pressureForce += BoundaryRepulsion(pos, neighbourPos, sqrt(sqrDstToNeighbour));
+                // boundary repulsion was formulated as a force, so divide by particle mass to get acceleration.
+                acceleration += BoundaryRepulsion(pos, neighbourPos, sqrt(sqrDstToNeighbour)) / particleMass;
             }
 
             // Skip if not within radius
@@ -406,14 +407,14 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
             neighbourCount++;
 
             // Update pressure force
-            pressureForce += particleMass * particleMass * sharedPressure * dirToNeighbour * DensityDerivative(dstToNeighbour, smoothingRadius);
+            acceleration += particleMass * sharedPressure * dirToNeighbour * DensityDerivative(dstToNeighbour, smoothingRadius);
 
             if (!boundaryNeighbour)
             {
                 float nearDensityNeighbour = Densities[neighbourIndex][1];
                 float neighbourPressureNear = NearPressureFromDensity(nearDensityNeighbour);
                 float sharedNearPressure = (nearPressure / (densityNear * densityNear) + neighbourPressureNear / (nearDensityNeighbour * nearDensityNeighbour));
-                pressureForce += particleMass * particleMass * sharedNearPressure * dirToNeighbour * NearDensityDerivative(dstToNeighbour, smoothingRadius);
+                acceleration += particleMass * sharedNearPressure * dirToNeighbour * NearDensityDerivative(dstToNeighbour, smoothingRadius);
 
                 // ---- White Particle 'Trapped Air' Calculation ----
                 float3 relativeVelocity = velocity - Velocities[neighbourIndex];
@@ -429,7 +430,8 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    float3 acceleration = pressureForce / particleMass;
+    //float3 acceleration = acceleration / particleMass; One particleMass is omitted from the acceleration calculation to skip this step - technically
+    // the acceleration value is already acceleration
     float3 velocityNew = velocity + acceleration * deltaTime;
     Velocities[id.x] = velocityNew;
 
@@ -542,10 +544,11 @@ void CalculateViscosity(uint3 id : SV_DispatchThreadID)
             // Calculate viscosity
             float dst = sqrt(sqrDstToNeighbour);
             float3 neighbourVelocity = Velocities[neighbourIndex];
-            viscosityForce += (neighbourVelocity - velocity) * SmoothingKernelPoly6(dst, smoothingRadius);
+            float densityNeighbour = Densities[neighbourIndex][0];
+            viscosityForce += (neighbourVelocity - velocity) * LaplacianViscosityKernel(dst, smoothingRadius) / densityNeighbour;
         }
     }
-    Velocities[id.x] += viscosityForce * viscosityStrength * deltaTime;
+    Velocities[id.x] += viscosityForce * viscosityStrength * deltaTime; // omit particle mass here and in the viscosity force calculation as it cancels out
 }
 
 [numthreads(ThreadGroupSize, 1, 1)]
