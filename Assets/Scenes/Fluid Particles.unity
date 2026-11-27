@@ -277,13 +277,14 @@ MonoBehaviour:
   normalTimeScale: 1
   slowTimeScale: 0.1
   maxTimestepFPS: 60
-  iterationsPerFrame: 6
+  iterationsPerFrame: 7
   gravity: -10
   smoothingRadius: 0.2
   particleMass: 1
   targetDensity: 630
   nearPressureMultiplier: 2.16
-  viscosityStrength: 0
+  viscosityStrength: 0.001
+  cohesionStrength: 0.5
   stiffness: 7
   speedOfSound: 20
   boundaryLayerThicknessFactor: 3

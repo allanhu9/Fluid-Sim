@@ -219,7 +219,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   timeScale: 1
   maxTimestepFPS: 60
-  iterationsPerFrame: 3
+  iterationsPerFrame: 6
   gravity: -12
   smoothingRadius: 0.35
   particleMass: 1
@@ -227,6 +227,7 @@ MonoBehaviour:
   pressureMultiplier: 250
   nearPressureMultiplier: 1
   viscosityStrength: 0.03
+  cohesionStrength: 0.5
   interactionRadius: 2
   interactionStrength: 90
   compute: {fileID: 7200000, guid: 8ae184c3dd0d4ebeb48dc75a5fa06679, type: 3}
@@ -365,7 +366,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   timeScale: 1
   maxTimestepFPS: 60
-  iterationsPerFrame: 3
+  iterationsPerFrame: 6
   gravity: -12
   smoothingRadius: 0.35
   particleMass: 1
@@ -373,6 +374,7 @@ MonoBehaviour:
   pressureMultiplier: 500
   nearPressureMultiplier: 0
   viscosityStrength: 0.03
+  cohesionStrength: 0
   interactionRadius: 2
   interactionStrength: 90
   compute: {fileID: 7200000, guid: 26c673f9bab7b924a8ccd8629d2587c8, type: 3}

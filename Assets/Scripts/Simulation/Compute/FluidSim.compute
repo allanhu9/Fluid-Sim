@@ -10,6 +10,8 @@
 #pragma kernel UpdateWhiteParticles
 #pragma kernel WhiteParticlePrepareNextFrame;
 #pragma kernel InitializeParticleTypes
+#pragma kernel CalculateSurfaceNormals
+#pragma kernel CalculateSurfaceTension
 
 // Includes
 #include "./FluidMaths3D.hlsl"
@@ -23,6 +25,7 @@ RWStructuredBuffer<float3> Positions;
 RWStructuredBuffer<float3> PredictedPositions;
 RWStructuredBuffer<float3> Velocities;
 RWStructuredBuffer<float2> Densities; // Density, Near Density
+RWStructuredBuffer<float3> SurfaceNormals; // Akinci et al, 2012 color field gradient; only valid for fluid particles
 RWStructuredBuffer<uint> ParticleTypes; // 0 = fluid, 1 = fixed boundary; reordered with positions
 
 // Spatial hashing
@@ -44,6 +47,7 @@ const float taitStiffness; // Tait exponent (gamma)
 const float taitB; // Tait pressure constant: targetDensity * speedOfSound^2 / stiffness
 const float nearPressureMultiplier;
 const float viscosityStrength;
+const float cohesionStrength; // alpha: Akinci et al, 2012 surface tension (cohesion + curvature) strength
 const float edgeForce;
 const float edgeForceDst;
 const float3 boundsSize;
@@ -709,4 +713,138 @@ void InitializeParticleTypes(uint3 id : SV_DispatchThreadID)
     if (id.x >= numParticles) return;
 
     ParticleTypes[id.x] = 0;
+}
+
+// Akinci et al, 2012 eq 125: n_i = h * sum_j (m_j / rho_j) * grad(W_ij).
+// Must run in its own pass (after CalculateDensities, before CalculateSurfaceTension) since it
+// reads every neighbour's finished density; fluid-fluid only, as boundary samples have no
+// meaningful density/normal and surface tension only acts between fluid particles.
+[numthreads(ThreadGroupSize, 1, 1)]
+void CalculateSurfaceNormals(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    if (IsBoundary(id.x))
+        return;
+
+    float3 pos = PredictedPositions[id.x];
+    int3 originCell = GetCell3D(pos, smoothingRadius);
+    float sqrRadius = smoothingRadius * smoothingRadius;
+
+    float3 normal = 0;
+
+    // Neighbour search
+    for (int i = 0; i < 27; i++)
+    {
+        int3 neighbourCell = originCell + offsets3D[i];
+        uint hash = HashCell3D(neighbourCell);
+        uint key = KeyFromHash(hash, numParticles);
+        uint currIndex = SpatialOffsets[key];
+
+        while (currIndex < numParticles)
+        {
+            uint neighbourIndex = currIndex;
+            currIndex++;
+
+            uint neighbourKey = SpatialKeys[neighbourIndex];
+            // Exit if no longer looking at correct bin
+            if (neighbourKey != key)
+                break;
+
+            // Skip if looking at self or at a fixed boundary sample
+            if (neighbourIndex == id.x || IsBoundary(neighbourIndex))
+                continue;
+
+            float3 neighbourPos = PredictedPositions[neighbourIndex];
+            // Different cells can share a hash key; visit each sample only in its actual cell.
+            if (any(GetCell3D(neighbourPos, smoothingRadius) != neighbourCell)) continue;
+            float3 offsetToNeighbour = neighbourPos - pos;
+            float sqrDstToNeighbour = dot(offsetToNeighbour, offsetToNeighbour);
+
+            // Skip if not within radius
+            if (sqrDstToNeighbour > sqrRadius)
+                continue;
+
+            float dstToNeighbour = sqrt(sqrDstToNeighbour);
+            float3 dirToNeighbour = dstToNeighbour > 0 ? offsetToNeighbour / dstToNeighbour : float3(0, 1, 0);
+            float densityNeighbour = Densities[neighbourIndex][0];
+
+            // Gradient uses the same kernel as the density summation, for consistency with it
+            normal += dirToNeighbour * DensityDerivative(dstToNeighbour, smoothingRadius) / densityNeighbour;
+        }
+    }
+
+    // particleMass and smoothingRadius are uniform per-particle constants, so factor them out of the sum once
+    SurfaceNormals[id.x] = normal * (particleMass * smoothingRadius);
+}
+
+// Akinci et al, 2012 surface tension: eq 123 (cohesion), eq 126 (curvature), eq 127 (combined, scaled
+// by K_ij to amplify the force near the under-estimated-density free surface). Applied directly to
+// Velocities, mirroring CalculateViscosity; only dispatched while cohesionStrength (alpha) > 0.
+[numthreads(ThreadGroupSize, 1, 1)]
+void CalculateSurfaceTension(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    if (IsBoundary(id.x))
+        return;
+
+    float3 pos = PredictedPositions[id.x];
+    int3 originCell = GetCell3D(pos, smoothingRadius);
+    float sqrRadius = smoothingRadius * smoothingRadius;
+
+    float density = Densities[id.x][0];
+    float3 normal = SurfaceNormals[id.x];
+    float3 acceleration = 0;
+
+    // Neighbour search
+    for (int i = 0; i < 27; i++)
+    {
+        int3 neighbourCell = originCell + offsets3D[i];
+        uint hash = HashCell3D(neighbourCell);
+        uint key = KeyFromHash(hash, numParticles);
+        uint currIndex = SpatialOffsets[key];
+
+        while (currIndex < numParticles)
+        {
+            uint neighbourIndex = currIndex;
+            currIndex++;
+
+            uint neighbourKey = SpatialKeys[neighbourIndex];
+            // Exit if no longer looking at correct bin
+            if (neighbourKey != key)
+                break;
+
+            // Skip if looking at self or at a fixed boundary sample
+            if (neighbourIndex == id.x || IsBoundary(neighbourIndex))
+                continue;
+
+            float3 neighbourPos = PredictedPositions[neighbourIndex];
+            // Different cells can share a hash key; visit each sample only in its actual cell.
+            if (any(GetCell3D(neighbourPos, smoothingRadius) != neighbourCell)) continue;
+            float3 offsetToNeighbour = neighbourPos - pos;
+            float sqrDstToNeighbour = dot(offsetToNeighbour, offsetToNeighbour);
+
+            // Skip if not within radius
+            if (sqrDstToNeighbour > sqrRadius)
+                continue;
+
+            float dstToNeighbour = sqrt(sqrDstToNeighbour);
+            float3 dirToNeighbour = dstToNeighbour > 0 ? offsetToNeighbour / dstToNeighbour : float3(0, 1, 0);
+
+            // Eq 127: K_ij amplifies the forces where density (and so the under-estimated free surface) is low
+            float densityNeighbour = Densities[neighbourIndex][0];
+            float sharedTensionFactor = 2 * targetDensity / (density + densityNeighbour);
+
+            // Eq 123: pulls this particle toward dense neighbours (becomes repulsive at close range - see CohesionKernel).
+            // particleMass here stands in for the neighbour's mass (m_j), uniform across all fluid particles.
+            float3 cohesionAcceleration = dirToNeighbour * (CohesionKernel(dstToNeighbour, smoothingRadius) * particleMass);
+            // Eq 126: pulls this particle's normal towards its neighbour's, minimizing surface curvature
+            float3 curvatureAcceleration = SurfaceNormals[neighbourIndex] - normal;
+
+            acceleration += sharedTensionFactor * (cohesionAcceleration + curvatureAcceleration);
+        }
+    }
+
+    Velocities[id.x] += acceleration * cohesionStrength * deltaTime;
 }

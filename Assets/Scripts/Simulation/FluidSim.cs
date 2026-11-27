@@ -23,6 +23,7 @@ namespace Seb.Fluid.Simulation
 		public float targetDensity = 630;
 		public float nearPressureMultiplier = 2.15f;
 		public float viscosityStrength = 0;
+		public float cohesionStrength = 0; // alpha: Akinci et al, 2012 surface tension (cohesion + curvature) strength
 
 		[Header("Pressure Calculation (Tait Equation of State)")]
 		[Min(1)] public float stiffness = 7; // Tait exponent (gamma)
@@ -66,6 +67,7 @@ namespace Seb.Fluid.Simulation
 		public ComputeBuffer positionBuffer { get; private set; }
 		public ComputeBuffer velocityBuffer { get; private set; }
 		public ComputeBuffer densityBuffer { get; private set; }
+		public ComputeBuffer surfaceNormalBuffer { get; private set; }
 		public ComputeBuffer particleTypeBuffer { get; private set; }
 		public ComputeBuffer predictedPositionsBuffer;
 		public ComputeBuffer debugBuffer { get; private set; }
@@ -91,6 +93,8 @@ namespace Seb.Fluid.Simulation
 		const int foamUpdateKernel = 9;
 		const int foamReorderCopyBackKernel = 10;
 		const int initializeParticleTypesKernel = 11;
+		const int surfaceNormalsKernel = 12;
+		const int surfaceTensionKernel = 13;
 
 		SpatialHash spatialHash;
 
@@ -134,6 +138,7 @@ namespace Seb.Fluid.Simulation
 			predictedPositionsBuffer = CreateStructuredBuffer<float3>(numParticles);
 			velocityBuffer = CreateStructuredBuffer<float3>(numParticles);
 			densityBuffer = CreateStructuredBuffer<float2>(numParticles);
+			surfaceNormalBuffer = CreateStructuredBuffer<float3>(numParticles);
 			particleTypeBuffer = CreateStructuredBuffer<uint>(numParticles);
 			foamBuffer = CreateStructuredBuffer<FoamParticle>(maxFoamParticleCount);
 			foamSortTargetBuffer = CreateStructuredBuffer<FoamParticle>(maxFoamParticleCount);
@@ -151,6 +156,7 @@ namespace Seb.Fluid.Simulation
 				{ predictedPositionsBuffer, "PredictedPositions" },
 				{ velocityBuffer, "Velocities" },
 				{ densityBuffer, "Densities" },
+				{ surfaceNormalBuffer, "SurfaceNormals" },
 				{ particleTypeBuffer, "ParticleTypes" },
 				{ spatialHash.SpatialKeys, "SpatialKeys" },
 				{ spatialHash.SpatialOffsets, "SpatialOffsets" },
@@ -240,6 +246,29 @@ namespace Seb.Fluid.Simulation
 			{
 				predictedPositionsBuffer,
 				densityBuffer,
+				velocityBuffer,
+				particleTypeBuffer,
+				spatialHash.SpatialKeys,
+				spatialHash.SpatialOffsets
+			});
+
+			// Surface normals kernel (surface tension, part 1: color field gradient)
+			SetBuffers(compute, surfaceNormalsKernel, bufferNameLookup, new ComputeBuffer[]
+			{
+				predictedPositionsBuffer,
+				densityBuffer,
+				surfaceNormalBuffer,
+				particleTypeBuffer,
+				spatialHash.SpatialKeys,
+				spatialHash.SpatialOffsets
+			});
+
+			// Surface tension kernel (surface tension, part 2: cohesion + curvature forces)
+			SetBuffers(compute, surfaceTensionKernel, bufferNameLookup, new ComputeBuffer[]
+			{
+				predictedPositionsBuffer,
+				densityBuffer,
+				surfaceNormalBuffer,
 				velocityBuffer,
 				particleTypeBuffer,
 				spatialHash.SpatialKeys,
@@ -384,6 +413,13 @@ namespace Seb.Fluid.Simulation
 			Dispatch(compute, positionBuffer.count, kernelIndex: densityKernel);
 			Dispatch(compute, positionBuffer.count, kernelIndex: pressureKernel);
 			if (viscosityStrength != 0) Dispatch(compute, positionBuffer.count, kernelIndex: viscosityKernel);
+			if (cohesionStrength != 0)
+			{
+				// Normals must be computed for every particle (in their own pass) before the surface
+				// tension pass, since each particle's curvature force reads its neighbours' normals.
+				Dispatch(compute, positionBuffer.count, kernelIndex: surfaceNormalsKernel);
+				Dispatch(compute, positionBuffer.count, kernelIndex: surfaceTensionKernel);
+			}
 			Dispatch(compute, positionBuffer.count, kernelIndex: updatePositionsKernel);
 		}
 
@@ -428,6 +464,7 @@ namespace Seb.Fluid.Simulation
 			compute.SetFloat("taitB", targetDensity * speedOfSound * speedOfSound / stiffness);
 			compute.SetFloat("nearPressureMultiplier", nearPressureMultiplier);
 			compute.SetFloat("viscosityStrength", viscosityStrength);
+			compute.SetFloat("cohesionStrength", cohesionStrength);
 			compute.SetVector("boundsSize", simBoundsSize);
 			compute.SetVector("centre", simBoundsCentre);
 

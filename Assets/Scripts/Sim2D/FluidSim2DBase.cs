@@ -19,6 +19,7 @@ namespace Seb.Fluid2D.Simulation
 		public float pressureMultiplier;
 		public float nearPressureMultiplier;
 		public float viscosityStrength;
+		public float cohesionStrength; // alpha: Akinci et al, 2012 surface tension (cohesion + curvature) strength
 
 		[Header("Interaction Settings")]
 		public float interactionRadius;
@@ -32,6 +33,7 @@ namespace Seb.Fluid2D.Simulation
 		public ComputeBuffer positionBuffer { get; private set; }
 		public ComputeBuffer velocityBuffer { get; private set; }
 		public ComputeBuffer densityBuffer { get; private set; }
+		public ComputeBuffer surfaceNormalBuffer { get; private set; }
 		public ComputeBuffer particleTypeBuffer { get; private set; }
 
 		ComputeBuffer sortTarget_Position;
@@ -52,6 +54,8 @@ namespace Seb.Fluid2D.Simulation
 		const int viscosityKernel = 6;
 		const int updatePositionKernel = 7;
 		int initializeParticleTypesKernel = -1;
+		int surfaceNormalsKernel = -1;
+		int surfaceTensionKernel = -1;
 
 		// State
 		bool isPaused;
@@ -124,6 +128,26 @@ namespace Seb.Fluid2D.Simulation
 				ComputeHelper.SetBuffer(compute, sortTarget_ParticleType, "SortTarget_ParticleTypes", reorderKernel, copybackKernel);
 			}
 
+			// These optional kernels add Akinci et al, 2012 surface tension (cohesion + curvature);
+			// only supported by compute shaders with boundary-particle support.
+			if (compute.HasKernel("CalculateSurfaceTension"))
+			{
+				surfaceNormalsKernel = compute.FindKernel("CalculateSurfaceNormals");
+				surfaceTensionKernel = compute.FindKernel("CalculateSurfaceTension");
+				surfaceNormalBuffer = ComputeHelper.CreateStructuredBuffer<float2>(numParticles);
+
+				ComputeHelper.SetBuffer(compute, surfaceNormalBuffer, "SurfaceNormals", surfaceNormalsKernel, surfaceTensionKernel);
+				ComputeHelper.SetBuffer(compute, predictedPositionBuffer, "PredictedPositions", surfaceNormalsKernel, surfaceTensionKernel);
+				ComputeHelper.SetBuffer(compute, densityBuffer, "Densities", surfaceNormalsKernel, surfaceTensionKernel);
+				ComputeHelper.SetBuffer(compute, velocityBuffer, "Velocities", surfaceTensionKernel);
+				ComputeHelper.SetBuffer(compute, spatialHash.SpatialOffsets, "SpatialOffsets", surfaceNormalsKernel, surfaceTensionKernel);
+				ComputeHelper.SetBuffer(compute, spatialHash.SpatialKeys, "SpatialKeys", surfaceNormalsKernel, surfaceTensionKernel);
+				if (particleTypeBuffer != null)
+				{
+					ComputeHelper.SetBuffer(compute, particleTypeBuffer, "ParticleTypes", surfaceNormalsKernel, surfaceTensionKernel);
+				}
+			}
+
 			// Init compute
 			ComputeHelper.SetBuffer(compute, positionBuffer, "Positions", externalForcesKernel, updatePositionKernel, reorderKernel, copybackKernel);
 			ComputeHelper.SetBuffer(compute, predictedPositionBuffer, "PredictedPositions", externalForcesKernel, spatialHashKernel, densityKernel, pressureKernel, viscosityKernel, reorderKernel, copybackKernel);
@@ -183,6 +207,13 @@ namespace Seb.Fluid2D.Simulation
 			ComputeHelper.Dispatch(compute, numParticles, kernelIndex: densityKernel);
 			ComputeHelper.Dispatch(compute, numParticles, kernelIndex: pressureKernel);
 			ComputeHelper.Dispatch(compute, numParticles, kernelIndex: viscosityKernel);
+			if (surfaceTensionKernel >= 0 && cohesionStrength != 0)
+			{
+				// Normals must be computed for every particle (in their own pass) before the surface
+				// tension pass, since each particle's curvature force reads its neighbours' normals.
+				ComputeHelper.Dispatch(compute, numParticles, kernelIndex: surfaceNormalsKernel);
+				ComputeHelper.Dispatch(compute, numParticles, kernelIndex: surfaceTensionKernel);
+			}
 			ComputeHelper.Dispatch(compute, numParticles, kernelIndex: updatePositionKernel);
 		}
 
@@ -218,6 +249,7 @@ namespace Seb.Fluid2D.Simulation
 			compute.SetFloat("pressureMultiplier", pressureMultiplier);
 			compute.SetFloat("nearPressureMultiplier", nearPressureMultiplier);
 			compute.SetFloat("viscosityStrength", viscosityStrength);
+			compute.SetFloat("cohesionStrength", cohesionStrength);
 			SetAdditionalSettings();
 
 			compute.SetFloat("Poly6ScalingFactor", 4 / (Mathf.PI * Mathf.Pow(radius, 8)));
@@ -301,12 +333,15 @@ namespace Seb.Fluid2D.Simulation
 
 		void ReleaseBuffers()
 		{
-			ComputeHelper.Release(positionBuffer, predictedPositionBuffer, velocityBuffer, densityBuffer, particleTypeBuffer, sortTarget_Position, sortTarget_Velocity, sortTarget_PredicitedPosition, sortTarget_ParticleType);
+			ComputeHelper.Release(positionBuffer, predictedPositionBuffer, velocityBuffer, densityBuffer, surfaceNormalBuffer, particleTypeBuffer, sortTarget_Position, sortTarget_Velocity, sortTarget_PredicitedPosition, sortTarget_ParticleType);
 			spatialHash?.Release();
 			spatialHash = null;
 			particleTypeBuffer = null;
 			sortTarget_ParticleType = null;
 			initializeParticleTypesKernel = -1;
+			surfaceNormalBuffer = null;
+			surfaceNormalsKernel = -1;
+			surfaceTensionKernel = -1;
 		}
 
 		protected virtual void OnDestroy()
